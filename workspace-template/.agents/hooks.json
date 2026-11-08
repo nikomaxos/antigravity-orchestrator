@@ -1,0 +1,88 @@
+{
+  "commit-gate": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/scripts/commit-gate.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "protect-enforcement": {
+    "PreToolUse": [
+      {
+        "matcher": "write_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/scripts/protect-enforcement.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "edit_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/scripts/protect-enforcement.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "write_to_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/scripts/protect-enforcement.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/scripts/protect-enforcement.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.agents/scripts/protect-enforcement.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "qa-stop-gate": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "./.agents/scripts/qa-stop-gate.sh",
+        "timeout": 10
+      }
+    ]
+  },
+  "preflight-context": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "./.agents/scripts/preflight.sh",
+        "timeout": 5
+      }
+    ]
+  }
+}

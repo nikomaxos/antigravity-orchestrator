@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Antigravity Workspace Initializer (`agy-init-workspace`)
+# =============================================================================
+# Initializes any Git repository with the Antigravity Multi-Model Orchestrator,
+# programmatic enforcement hooks, and hard gatekeeper integration.
+#
+# Usage:
+#   agy-init-workspace [TARGET_DIR]
+# =============================================================================
+set -euo pipefail
+
+TARGET_DIR="${1:-.}"
+TARGET_DIR="$(realpath "$TARGET_DIR")"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+TEMPLATE_DIR="${REPO_DIR}/workspace-template"
+
+echo "🚀 Initializing Antigravity Orchestrator in: ${TARGET_DIR}"
+
+# 1. Verify / Init Git
+if [ ! -d "${TARGET_DIR}/.git" ]; then
+  echo "📦 Initializing Git repository in ${TARGET_DIR}..."
+  git -C "$TARGET_DIR" init -b main
+fi
+
+# 2. Copy workspace template
+mkdir -p "${TARGET_DIR}/.agents"
+mkdir -p "${TARGET_DIR}/.agent-state"
+mkdir -p "${TARGET_DIR}/.agent-reports/codex"
+
+# Copy .agents files
+cp -r "${TEMPLATE_DIR}/.agents/hooks.json" "${TARGET_DIR}/.agents/"
+cp -r "${TEMPLATE_DIR}/.agents/rules" "${TARGET_DIR}/.agents/"
+cp -r "${TEMPLATE_DIR}/.agents/scripts" "${TARGET_DIR}/.agents/"
+cp -r "${TEMPLATE_DIR}/.agents/skills" "${TARGET_DIR}/.agents/"
+
+# Only copy PROJECT_KNOWLEDGE.md if it does not already exist
+if [ ! -f "${TARGET_DIR}/.agents/PROJECT_KNOWLEDGE.md" ]; then
+  cp "${TEMPLATE_DIR}/.agents/PROJECT_KNOWLEDGE.md" "${TARGET_DIR}/.agents/"
+  echo "📄 Created .agents/PROJECT_KNOWLEDGE.md"
+else
+  echo "ℹ️  Preserved existing .agents/PROJECT_KNOWLEDGE.md"
+fi
+
+# Copy AGENTS.md if not already present
+if [ ! -f "${TARGET_DIR}/AGENTS.md" ]; then
+  cp "${TEMPLATE_DIR}/AGENTS.md" "${TARGET_DIR}/"
+  echo "📄 Created AGENTS.md"
+else
+  echo "ℹ️  Preserved existing AGENTS.md"
+fi
+
+# Ensure executable scripts
+chmod +x "${TARGET_DIR}"/.agents/scripts/*.sh 2>/dev/null || true
+
+# 3. Install Git Hooks
+mkdir -p "${TARGET_DIR}/.git/hooks"
+
+cat << 'EOF' > "${TARGET_DIR}/.git/hooks/pre-commit"
+#!/usr/bin/env bash
+# Antigravity Gatekeeper Native Pre-Commit Hook
+set -euo pipefail
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+exec "${REPO_ROOT}/.agents/scripts/commit-gate.sh" --git-hook
+EOF
+chmod +x "${TARGET_DIR}/.git/hooks/pre-commit"
+
+cat << 'EOF' > "${TARGET_DIR}/.git/hooks/post-commit"
+#!/usr/bin/env bash
+# Antigravity Gatekeeper Native Post-Commit Hook
+set -euo pipefail
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+HEAD_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+if [ -n "$HEAD_SHA" ]; then
+  curl -sf -X POST -H "Content-Type: application/json" \
+    -d "{\"workspace\":\"${REPO_ROOT}\",\"head\":\"${HEAD_SHA}\"}" \
+    "http://127.0.0.1:18099/api/gatekeeper/register-commit" >/dev/null 2>&1 || true
+fi
+exit 0
+EOF
+chmod +x "${TARGET_DIR}/.git/hooks/post-commit"
+
+# 4. Check Gatekeeper Service Status
+echo ""
+if curl -sf "http://127.0.0.1:18099/api/gatekeeper/health" >/dev/null 2>&1; then
+  echo "✅ agy-gatekeeper.service is active and healthy on 127.0.0.1:18099."
+else
+  echo "⚠️  agy-gatekeeper.service is NOT responding on 127.0.0.1:18099."
+  echo "   To install the root gatekeeper daemon, run:"
+  echo "   sudo ${REPO_DIR}/gatekeeper/install-gatekeeper.sh"
+fi
+
+echo ""
+echo "🎉 Workspace initialized successfully!"
+echo "   - .agents/hooks.json (Lifecycle enforcement hooks)"
+echo "   - .agents/scripts/ (Frontier orchestrator & gate runners)"
+echo "   - .git/hooks/pre-commit & post-commit"
+echo "   - .agent-state/ & .agent-reports/"

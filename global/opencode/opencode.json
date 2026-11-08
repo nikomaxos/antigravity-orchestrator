@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "readonly-auditor": {
+      "mode": "primary",
+      "description": "Strict read-only code & log auditor (Single-Writer workspace invariant)",
+      "permission": {
+        "edit": "deny",
+        "write": "deny",
+        "webfetch": "deny",
+        "bash": {
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow",
+          "git status*": "allow",
+          "rg *": "allow",
+          "grep *": "allow",
+          "cat *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "ls *": "allow",
+          "*": "deny"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=Antigravity Universal Multi-Workspace Gatekeeper Enforcement Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/node /usr/local/lib/agy-gatekeeper/server.js
+Restart=always
+RestartSec=2
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

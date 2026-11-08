@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Antigravity Architecture Synchronizer (`agy-arch-sync`)
+# =============================================================================
+# Pulls latest updates for the Antigravity Orchestrator repo and re-runs install.sh.
+# =============================================================================
+set -euo pipefail
+
+REPO_DIR="${HOME}/Development/antigravity-orchestrator"
+
+if [ ! -d "$REPO_DIR" ]; then
+  echo "❌ Repository not found at: ${REPO_DIR}" >&2
+  exit 1
+fi
+
+echo "🔄 Checking for updates in ${REPO_DIR}..."
+
+if git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1; then
+  git -C "$REPO_DIR" pull --ff-only || {
+    echo "⚠️ Git pull failed or fast-forward not possible. Please check repository state."
+  }
+else
+  echo "ℹ️  No remote 'origin' configured for ${REPO_DIR}. Skipping pull."
+fi
+
+echo "📦 Running install.sh..."
+bash "${REPO_DIR}/install.sh"
+echo "✅ Architecture sync complete!"

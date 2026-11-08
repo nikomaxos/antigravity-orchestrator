@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Global Frontier Orchestrator CLI (`frontier-orchestrate`)
+# =============================================================================
+# Dispatches frontier reasoning tasks to the current repository's
+# .agents/scripts/frontier-orchestrate.sh (or global fallback).
+# =============================================================================
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+if [ -f "${REPO_ROOT}/.agents/scripts/frontier-orchestrate.sh" ]; then
+  exec bash "${REPO_ROOT}/.agents/scripts/frontier-orchestrate.sh" "$@"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FALLBACK="${SCRIPT_DIR}/../workspace-template/.agents/scripts/frontier-orchestrate.sh"
+
+if [ -f "$FALLBACK" ]; then
+  exec bash "$FALLBACK" "$@"
+fi
+
+echo "❌ ERROR: frontier-orchestrate.sh not found in current repo or global template." >&2
+exit 1

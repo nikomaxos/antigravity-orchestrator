@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Antigravity CLI Installer & Health Checker (`agy-setup-clis`)
+# =============================================================================
+# Installs, configures, authenticates, and smoke-tests the 3 external frontier
+# CLIs across the orthogonal pools:
+#   - Pool B: OpenAI Codex CLI (`codex`)
+#   - Pool C: Anthropic Claude Code CLI (`claude`)
+#   - Pool D: OpenCode + DeepSeek API (`opencode`)
+# =============================================================================
+set -euo pipefail
+
+export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
+check_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+ensure_path_env() {
+  local rc_file=""
+  for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
+    if [ -f "$rc" ]; then
+      if ! grep -q '\.local/bin' "$rc" 2>/dev/null; then
+        echo 'export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:${PATH}"' >> "$rc"
+      fi
+    fi
+  done
+}
+
+ensure_npm_user_prefix() {
+  mkdir -p "${HOME}/.npm-global/bin" "${HOME}/.npm-global/lib"
+  if check_command npm; then
+    local cur_prefix
+    cur_prefix=$(npm config get prefix 2>/dev/null || echo "")
+    if [[ "$cur_prefix" == "/usr"* ]] || [ -z "$cur_prefix" ]; then
+      npm config set prefix "${HOME}/.npm-global" 2>/dev/null || true
+    fi
+  fi
+}
+
+install_clis() {
+  echo "📦 === Installing Antigravity External Frontier CLIs ==="
+
+  # 1. Prerequisites
+  echo "🔍 Checking prerequisites (jq, curl, node, npm)..."
+  for tool in jq curl node npm; do
+    if ! check_command "$tool"; then
+      echo "⚠️  Missing prerequisite: $tool"
+      echo "   Please install via your package manager, e.g.: sudo apt update && sudo apt install -y jq curl nodejs npm"
+    else
+      echo "   ✓ $tool is installed ($(command -v "$tool"))"
+    fi
+  done
+
+  ensure_npm_user_prefix
+  ensure_path_env
+
+  # 2. Pool B: OpenAI Codex CLI
+  echo ""
+  echo "🤖 [Pool B] Setting up OpenAI Codex CLI (codex)..."
+  if check_command codex || [ -x "${HOME}/.npm-global/bin/codex" ]; then
+    echo "   ✓ codex CLI already installed: $(codex --version 2>/dev/null || echo 'installed')"
+  else
+    echo "   ⬇️ Installing @openai/codex via npm..."
+    npm install -g @openai/codex || echo "⚠️ npm install failed. Try: sudo npm install -g @openai/codex"
+    if check_command codex; then
+      echo "   ✅ Codex CLI installed: $(codex --version 2>/dev/null || echo 'OK')"
+    fi
+  fi
+
+  # 3. Pool C: Anthropic Claude Code CLI
+  echo ""
+  echo "🤖 [Pool C] Setting up Anthropic Claude Code CLI (claude)..."
+  if check_command claude || [ -x "${HOME}/.local/bin/claude" ] || [ -x "${HOME}/.npm-global/bin/claude" ]; then
+    echo "   ✓ claude CLI already installed: $(claude --version 2>/dev/null || echo 'installed')"
+  else
+    echo "   ⬇️ Installing @anthropic-ai/claude-code via npm / installer..."
+    if check_command npm; then
+      npm install -g @anthropic-ai/claude-code || true
+    fi
+    if ! check_command claude; then
+      curl -fsSL https://claude.ai/install.sh | bash 2>/dev/null || true
+    fi
+    if check_command claude || [ -x "${HOME}/.local/bin/claude" ]; then
+      echo "   ✅ Claude Code CLI installed: $(claude --version 2>/dev/null || echo 'OK')"
+    fi
+  fi
+
+  # 4. Pool D: OpenCode + DeepSeek CLI
+  echo ""
+  echo "🤖 [Pool D] Setting up OpenCode CLI (opencode)..."
+  if check_command opencode || [ -x "${HOME}/.opencode/bin/opencode" ]; then
+    echo "   ✓ opencode CLI already installed: $(opencode --version 2>/dev/null || echo 'installed')"
+  else
+    echo "   ⬇️ Installing opencode via official installer..."
+    curl -fsSL https://opencode.ai/install | bash 2>/dev/null || {
+      if check_command npm; then
+        npm install -g opencode-ai 2>/dev/null || true
+      fi
+    }
+    if check_command opencode || [ -x "${HOME}/.opencode/bin/opencode" ]; then
+      echo "   ✅ OpenCode CLI installed: $(opencode --version 2>/dev/null || echo 'OK')"
+    fi
+  fi
+
+  # 5. OpenCode configuration
+  echo ""
+  echo "⚙️ Configuring OpenCode readonly-auditor profile..."
+  mkdir -p "${HOME}/.config/opencode"
+  if [ ! -f "${HOME}/.config/opencode/opencode.json" ]; then
+    cp "${REPO_DIR}/global/opencode/opencode.json" "${HOME}/.config/opencode/opencode.json"
+    echo "   ✓ Created ~/.config/opencode/opencode.json"
+  else
+    echo "   ℹ️ Preserved existing ~/.config/opencode/opencode.json"
+  fi
+
+  echo ""
+  echo "🎉 CLI installation step finished!"
+  echo "👉 Next steps:"
+  echo "   - Run 'agy-setup-clis --auth' to authenticate pools B, C, D"
+  echo "   - Run 'agy-setup-clis --test' to smoke-test all pools in read-only mode"
+}
+
+auth_clis() {
+  echo "🔐 === Antigravity Multi-Pool Authentication Guide ==="
+  echo ""
+  echo "1. Pool B — OpenAI Codex CLI:"
+  echo "   Command: codex login"
+  echo "   (Opens browser or prompts for ChatGPT Plus / OpenAI session)"
+  echo ""
+  echo "2. Pool C — Anthropic Claude Code CLI:"
+  echo "   Command: claude login"
+  echo "   (Opens browser to authenticate with Claude Pro/Max subscription)"
+  echo ""
+  echo "3. Pool D — OpenCode + DeepSeek API Key:"
+  mkdir -p "${HOME}/.config/llm-council"
+  local secrets_env="${HOME}/.config/llm-council/secrets.env"
+  if [ -f "$secrets_env" ] && grep -qE '^DEEPSEEK_API_KEY="?sk-[A-Za-z0-9_-]+' "$secrets_env" 2>/dev/null; then
+    echo "   ✓ DEEPSEEK_API_KEY is already configured in ~/.config/llm-council/secrets.env"
+  else
+    echo "   Enter your DEEPSEEK_API_KEY (or press Enter to skip for now):"
+    read -r -s entered_key || entered_key=""
+    if [ -n "$entered_key" ]; then
+      echo "DEEPSEEK_API_KEY=\"${entered_key}\"" > "$secrets_env"
+      chmod 600 "$secrets_env"
+      echo "   ✓ Saved DEEPSEEK_API_KEY to ~/.config/llm-council/secrets.env (mode 0600)"
+    else
+      echo "   ℹ️ Skipped. You can add DEEPSEEK_API_KEY=\"sk-...\" to ~/.config/llm-council/secrets.env anytime."
+    fi
+  fi
+}
+
+test_clis() {
+  echo "🧪 === Testing Antigravity Multi-Model Frontier Pools (Read-Only) ==="
+  echo ""
+
+  local b_status="✗ Missing"
+  local c_status="✗ Missing"
+  local d_status="✗ Missing"
+
+  # Test Pool B: Codex
+  if check_command codex || [ -x "${HOME}/.npm-global/bin/codex" ]; then
+    echo "⏳ Testing Pool B (Codex CLI)..."
+    if timeout 10 codex exec -s read-only -m gpt-5.6-terra -c "model_reasoning_effort=\"medium\"" -c "features.multi_agent=false" --json - <<< "Hello" >/dev/null 2>&1; then
+      b_status="✓ OK (Authenticated & Ready)"
+    elif codex --version >/dev/null 2>&1; then
+      b_status="⚠️ Installed (Needs 'codex login')"
+    fi
+  fi
+
+  # Test Pool C: Claude Code
+  if check_command claude || [ -x "${HOME}/.local/bin/claude" ] || [ -x "${HOME}/.npm-global/bin/claude" ]; then
+    echo "⏳ Testing Pool C (Claude Code CLI)..."
+    if timeout 10 claude -p --model haiku --permission-mode plan -- "Hello" >/dev/null 2>&1; then
+      c_status="✓ OK (Authenticated & Ready)"
+    elif claude --version >/dev/null 2>&1; then
+      c_status="⚠️ Installed (Needs 'claude login')"
+    fi
+  fi
+
+  # Test Pool D: OpenCode + DeepSeek
+  if check_command opencode || [ -x "${HOME}/.opencode/bin/opencode" ]; then
+    echo "⏳ Testing Pool D (OpenCode + DeepSeek)..."
+    local secrets_env="${HOME}/.config/llm-council/secrets.env"
+    if [ -f "$secrets_env" ] && grep -qE '^DEEPSEEK_API_KEY="?sk-[A-Za-z0-9_-]+' "$secrets_env" 2>/dev/null; then
+      d_status="✓ OK (DEEPSEEK_API_KEY configured)"
+    else
+      d_status="✓ OK (Free fallback ready; set key for deepseek-v4-pro)"
+    fi
+  fi
+
+  echo ""
+  echo "=========================================================="
+  echo "  Pool B (OpenAI Codex CLI):       $b_status"
+  echo "  Pool C (Anthropic Claude Code):  $c_status"
+  echo "  Pool D (OpenCode DeepSeek API):  $d_status"
+  echo "=========================================================="
+}
+
+ACTION="${1:---install}"
+
+case "$ACTION" in
+  --install|-i|install)
+    install_clis
+    ;;
+  --auth|-a|auth)
+    auth_clis
+    ;;
+  --test|-t|--smoke-test|test)
+    test_clis
+    ;;
+  -h|--help|help)
+    cat <<'EOF'
+Usage:
+  agy-setup-clis [OPTIONS]
+
+Options:
+  --install       Install missing prerequisites and all 3 CLIs (Default)
+  --auth          Guided authentication for Pools B, C, D
+  --test          Run read-only smoke tests across Pools B, C, D
+  -h, --help      Show this help message
+EOF
+    ;;
+  *)
+    echo "Unknown option: $ACTION" >&2
+    exit 1
+    ;;
+esac

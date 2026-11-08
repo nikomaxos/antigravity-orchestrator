@@ -1,0 +1,50 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings", "owasp_checklist"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "FAIL"],
+      "description": "FAIL if and only if at least one finding has severity CRITICAL or HIGH."
+    },
+    "summary": {
+      "type": "string",
+      "description": "2-6 sentence overall assessment of the staged change (in Greek)."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "category", "file", "line", "title", "description", "recommendation"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
+          "category": {
+            "type": "string",
+            "enum": ["correctness", "security", "regression", "concurrency", "data-integrity", "performance", "rule-violation", "maintainability", "other"]
+          },
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "recommendation": { "type": "string" }
+        }
+      }
+    },
+    "owasp_checklist": {
+      "type": "array",
+      "description": "Mandatory OWASP verification of the staged diff (at least 5 checks: XSS, SQLi, CommandInjection, AccessControl, SecurityMisconfig).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check", "status", "notes"],
+        "properties": {
+          "check": { "type": "string" },
+          "status": { "type": "string", "enum": ["PASS", "FAIL", "NOT_APPLICABLE"] },
+          "notes": { "type": "string" }
+        }
+      }
+    }
+  }
+}
