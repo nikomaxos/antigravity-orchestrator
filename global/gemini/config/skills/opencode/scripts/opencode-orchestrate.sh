@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:${PATH}"
+export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.opencode/bin:${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 SECRETS_ENV="${HOME}/.config/llm-council/secrets.env"
 if [ -f "$SECRETS_ENV" ]; then
   if grep -qE '^DEEPSEEK_API_KEY="?sk-[A-Za-z0-9_-]+' "$SECRETS_ENV" 2>/dev/null; then

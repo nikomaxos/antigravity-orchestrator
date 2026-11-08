@@ -6,10 +6,11 @@ After=network.target
 Type=simple
 User=root
 Group=root
-ExecStart=/usr/bin/node /usr/local/lib/agy-gatekeeper/server.js
+ExecStart=/home/nick/.local/share/mise/installs/node/26.8.2/bin/node /usr/local/lib/agy-gatekeeper/server.js
 Restart=always
 RestartSec=2
 Environment=NODE_ENV=production
+Environment=PATH=/home/nick/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 [Install]
 WantedBy=multi-user.target

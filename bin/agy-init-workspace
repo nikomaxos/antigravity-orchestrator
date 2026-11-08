@@ -10,11 +10,17 @@
 # =============================================================================
 set -euo pipefail
 
+export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 TARGET_DIR="${1:-.}"
 TARGET_DIR="$(realpath "$TARGET_DIR")"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
+if [ ! -d "${REPO_DIR}/workspace-template" ]; then
+  REPO_DIR="${HOME}/Development/antigravity-orchestrator"
+fi
 TEMPLATE_DIR="${REPO_DIR}/workspace-template"
 
 echo "🚀 Initializing Antigravity Orchestrator in: ${TARGET_DIR}"
@@ -36,16 +42,16 @@ cp -r "${TEMPLATE_DIR}/.agents/rules" "${TARGET_DIR}/.agents/"
 cp -r "${TEMPLATE_DIR}/.agents/scripts" "${TARGET_DIR}/.agents/"
 cp -r "${TEMPLATE_DIR}/.agents/skills" "${TARGET_DIR}/.agents/"
 
-# Only copy PROJECT_KNOWLEDGE.md if it does not already exist
-if [ ! -f "${TARGET_DIR}/.agents/PROJECT_KNOWLEDGE.md" ]; then
+# Only copy PROJECT_KNOWLEDGE.md if neither .agents/PROJECT_KNOWLEDGE.md nor root PROJECT_KNOWLEDGE.md already exists
+if [ ! -f "${TARGET_DIR}/.agents/PROJECT_KNOWLEDGE.md" ] && [ ! -f "${TARGET_DIR}/PROJECT_KNOWLEDGE.md" ]; then
   cp "${TEMPLATE_DIR}/.agents/PROJECT_KNOWLEDGE.md" "${TARGET_DIR}/.agents/"
   echo "📄 Created .agents/PROJECT_KNOWLEDGE.md"
 else
-  echo "ℹ️  Preserved existing .agents/PROJECT_KNOWLEDGE.md"
+  echo "ℹ️  Preserved existing PROJECT_KNOWLEDGE.md"
 fi
 
-# Copy AGENTS.md if not already present
-if [ ! -f "${TARGET_DIR}/AGENTS.md" ]; then
+# Copy AGENTS.md only if neither root AGENTS.md nor .agents/AGENTS.md already exists
+if [ ! -f "${TARGET_DIR}/AGENTS.md" ] && [ ! -f "${TARGET_DIR}/.agents/AGENTS.md" ]; then
   cp "${TEMPLATE_DIR}/AGENTS.md" "${TARGET_DIR}/"
   echo "📄 Created AGENTS.md"
 else

@@ -19,6 +19,8 @@
           "head *": "allow",
           "tail *": "allow",
           "ls *": "allow",
+          "*secrets.env*": "deny",
+          "*gate.key*": "deny",
           "*": "deny"
         }
       }

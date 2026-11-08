@@ -7,14 +7,21 @@
 # =============================================================================
 set -euo pipefail
 
+export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 if [ -f "${REPO_ROOT}/.agents/scripts/frontier-orchestrate.sh" ]; then
   exec bash "${REPO_ROOT}/.agents/scripts/frontier-orchestrate.sh" "$@"
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FALLBACK="${SCRIPT_DIR}/../workspace-template/.agents/scripts/frontier-orchestrate.sh"
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+if [ ! -d "${REPO_DIR}/workspace-template" ]; then
+  REPO_DIR="${HOME}/Development/antigravity-orchestrator"
+fi
+FALLBACK="${REPO_DIR}/workspace-template/.agents/scripts/frontier-orchestrate.sh"
 
 if [ -f "$FALLBACK" ]; then
   exec bash "$FALLBACK" "$@"

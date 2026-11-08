@@ -11,14 +11,25 @@
 // =============================================================================
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 const HOST = '127.0.0.1';
 const PORT = 18099;
-const KEY_PATH = '/etc/agy-gatekeeper/gate.key';
-const CERTIFIED_COMMITS_PATH = '/var/lib/agy-gatekeeper/certified-commits.json';
+const IS_ROOT = !(process.getuid && process.getuid() !== 0);
+const USER_HOME = process.env.HOME || os.homedir() || '/home/nick';
+const KEY_PATH = process.env.AGY_GATEKEEPER_KEY_PATH || (
+  IS_ROOT
+    ? '/etc/agy-gatekeeper/gate.key'
+    : path.join(USER_HOME, '.config/agy-gatekeeper/gate.key')
+);
+const CERTIFIED_COMMITS_PATH = process.env.AGY_GATEKEEPER_COMMITS_PATH || (
+  IS_ROOT
+    ? '/var/lib/agy-gatekeeper/certified-commits.json'
+    : path.join(USER_HOME, '.local/share/agy-gatekeeper/certified-commits.json')
+);
 
 const ALLOWED_GATES = new Set([
   'qa',
@@ -64,7 +75,9 @@ function getMasterSecret() {
     fs.mkdirSync(path.dirname(KEY_PATH), { recursive: true, mode: 0o700 });
     fs.writeFileSync(KEY_PATH, secret + '\n', { mode: 0o600 });
     try {
-      fs.chownSync(KEY_PATH, 0, 0);
+      if (IS_ROOT) {
+        fs.chownSync(KEY_PATH, 0, 0);
+      }
       fs.chmodSync(KEY_PATH, 0o600);
     } catch (_) {}
   }
@@ -76,8 +89,15 @@ function syncWorkspaceHookSecret(workspace, secret) {
   if (fs.existsSync(hookDir)) {
     const hookKeyPath = path.join(hookDir, '.gate-secret');
     try {
+      try {
+        if ((fs.existsSync(hookKeyPath) || true) && fs.lstatSync(hookKeyPath).isSymbolicLink()) {
+          fs.unlinkSync(hookKeyPath);
+        }
+      } catch (_) {}
       fs.writeFileSync(hookKeyPath, secret + '\n', { mode: 0o600 });
-      fs.chownSync(hookKeyPath, 0, 0);
+      if (IS_ROOT) {
+        fs.chownSync(hookKeyPath, 0, 0);
+      }
       fs.chmodSync(hookKeyPath, 0o600);
     } catch (_) {}
   }
@@ -102,7 +122,7 @@ function getWorkspaceOwnership(workspace) {
 
 function runGit(workspace, args) {
   try {
-    return execFileSync('git', ['-c', `safe.directory=${workspace}`, '-C', workspace, ...args], {
+    return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', `safe.directory=${workspace}`, '-C', workspace, ...args], {
       encoding: 'utf8',
       maxBuffer: 50 * 1024 * 1024
     });
@@ -122,12 +142,11 @@ function getParentHead(workspace) {
 function getCurrentWorktreeHash(workspace) {
   try {
     const out = execFileSync('bash', ['-c', `
-      cd "${workspace}"
-      {
-        git -c "safe.directory=${workspace}" diff HEAD -- . ":(exclude).agent-state" ":(exclude).agent-reports" ":(exclude).last-staging-deploy" ":(exclude)*.md" ":(exclude).agents/skills" ":(exclude)platform-docs" ":(exclude)docs" 2>/dev/null || true
-        git -c "safe.directory=${workspace}" ls-files --others --exclude-standard -z -- . ":(exclude).agent-state" ":(exclude).agent-reports" ":(exclude).last-staging-deploy" ":(exclude)*.md" ":(exclude).agents/skills" ":(exclude)platform-docs" ":(exclude)docs" 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
+      cd "$1" && {
+        git -c core.fsmonitor=false -c "safe.directory=$1" diff HEAD -- . ":(exclude).agent-state" ":(exclude).agent-reports" ":(exclude).last-staging-deploy" ":(exclude)*.md" ":(exclude).agents/skills" ":(exclude)platform-docs" ":(exclude)docs" 2>/dev/null || true
+        git -c core.fsmonitor=false -c "safe.directory=$1" ls-files --others --exclude-standard -z -- . ":(exclude).agent-state" ":(exclude).agent-reports" ":(exclude).last-staging-deploy" ":(exclude)*.md" ":(exclude).agents/skills" ":(exclude)platform-docs" ":(exclude)docs" 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
       } | md5sum | awk '{print $1}'
-    `], { encoding: 'utf8' }).trim();
+    `, '_', workspace], { encoding: 'utf8' }).trim();
     if (out) return out;
   } catch (_) {}
   const diff = runGit(workspace, ['diff', 'HEAD', '--', '.', ...NON_CODE_WORKTREE_EXCLUDES]);
@@ -153,8 +172,8 @@ function hasCodeChangesForVault(workspace) {
 }
 
 function hasActualVaultDiff(workspace) {
-  const diffHead = runGit(workspace, ['diff', 'HEAD', '--', '.agents/PROJECT_KNOWLEDGE.md', '.agents/knowledge/']).trim();
-  const diffCached = runGit(workspace, ['diff', '--cached', '--', '.agents/PROJECT_KNOWLEDGE.md', '.agents/knowledge/']).trim();
+  const diffHead = runGit(workspace, ['diff', 'HEAD', '--', '.agents/PROJECT_KNOWLEDGE.md', 'PROJECT_KNOWLEDGE.md', '.agents/knowledge/']).trim();
+  const diffCached = runGit(workspace, ['diff', '--cached', '--', '.agents/PROJECT_KNOWLEDGE.md', 'PROJECT_KNOWLEDGE.md', '.agents/knowledge/']).trim();
   return Boolean(diffHead || diffCached);
 }
 

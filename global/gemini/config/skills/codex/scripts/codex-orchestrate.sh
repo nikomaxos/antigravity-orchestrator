@@ -11,6 +11,9 @@
 # =============================================================================
 set -euo pipefail
 
+export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 CODEX_TIER="${CODEX_TIER:-backend}"
 CODEX_MODEL="${CODEX_MODEL:-}"
 CODEX_EFFORT="${CODEX_EFFORT:-}"
@@ -26,6 +29,9 @@ chmod 700 "$STATE_ROOT"
 codex_resolve_bin() {
   if [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN}" ]; then
     echo "${CODEX_BIN}"; return 0
+  fi
+  if [ -x "${HOME}/.local/share/mise/shims/codex" ]; then
+    echo "${HOME}/.local/share/mise/shims/codex"; return 0
   fi
   if [ -x "${HOME}/.npm-global/bin/codex" ]; then
     echo "${HOME}/.npm-global/bin/codex"; return 0

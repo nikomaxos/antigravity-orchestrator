@@ -11,10 +11,13 @@
 set -euo pipefail
 
 export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
+if [ ! -d "${REPO_DIR}/workspace-template" ]; then
+  REPO_DIR="${HOME}/Development/antigravity-orchestrator"
+fi
 
 check_command() {
   command -v "$1" >/dev/null 2>&1
@@ -25,7 +28,7 @@ ensure_path_env() {
   for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
     if [ -f "$rc" ]; then
       if ! grep -q '\.local/bin' "$rc" 2>/dev/null; then
-        echo 'export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:${PATH}"' >> "$rc"
+        echo 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:${PATH}"' >> "$rc"
       fi
     fi
   done
@@ -167,6 +170,8 @@ test_clis() {
     echo "⏳ Testing Pool B (Codex CLI)..."
     if timeout 10 codex exec -s read-only -m gpt-5.6-terra -c "model_reasoning_effort=\"medium\"" -c "features.multi_agent=false" --json - <<< "Hello" >/dev/null 2>&1; then
       b_status="✓ OK (Authenticated & Ready)"
+    elif codex login status 2>&1 | grep -qi "Logged in"; then
+      b_status="✓ Authenticated (ChatGPT Plus — Quota resets soon)"
     elif codex --version >/dev/null 2>&1; then
       b_status="⚠️ Installed (Needs 'codex login')"
     fi

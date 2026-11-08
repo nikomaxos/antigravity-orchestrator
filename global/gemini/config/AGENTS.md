@@ -1,3 +1,9 @@
+# User Preferences
+
+- **Language & Voice**: The user primarily speaks Greek (Ελληνικά) with English (Αγγλικά) as a secondary language. For voice dictation, speech recognition, and spoken instructions, expect Greek and bilingual Greek/English terminology. Always respond in Greek when addressed in Greek.
+- **Text-to-Speech (TTS) & Notifications**: Always use HD Voice for speech synthesis and voice announcements (όπως «Εκφώνησε το εξής μήνυμα...»). Use the local `tts` CLI command (`tts "<μήνυμα>"`), which utilizes neural HD voices (`el-GR-NestorasNeural` by default) with configuration persisted in `~/.config/omarchy/tts.json`.
+- **Default Location & Weather**: Η προεπιλεγμένη τοποθεσία (default location) του χρήστη και του συστήματος είναι ο **Κοπανός Ημαθίας** («εδώ βρίσκεσαι»). Όταν ο χρήστης ρωτάει για τον καιρό χωρίς να προσδιορίζει τοποθεσία, η πρόγνωση και η απάντηση αφορούν πάντα τον Κοπανό Ημαθίας.
+
 # Global Machine-Local Rules (Antigravity)
 
 - **PRECISION QUALITY & QUOTA DISCIPLINE (ZERO QUALITY COMPROMISE)**: Quality is always #1, achieved by matching **every task tier (`T0`–`T4`) to the exact right frontier model & thinking level** across 4 orthogonal pools (`Antigravity Native`, `OpenAI Codex CLI`, `Anthropic Claude Code CLI`, `OpenCode DeepSeek CLI`) — NEVER by burning `Gemini 4 Argon High` (`59s`/step) or `gpt-6-astra xhigh` on file-reading, live ops checks, CSS tweaks, or mega-context loops.

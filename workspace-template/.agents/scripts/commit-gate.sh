@@ -8,6 +8,9 @@
 # =============================================================================
 set -euo pipefail
 
+export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 GIT_HOOK_MODE=0
 if [ "${1:-}" = "--git-hook" ]; then
   GIT_HOOK_MODE=1

@@ -18,7 +18,7 @@ set -euo pipefail
 # Canonical environment
 unset CODEX_BIN CODEX_HOME CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_TIMEOUT_SECS CODEX_MAX_DIFF_BYTES DEEPSEEK_API_KEY ANTHROPIC_API_KEY
 export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=codex-lib.sh

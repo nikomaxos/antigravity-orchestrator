@@ -4,6 +4,9 @@
 # =============================================================================
 set -euo pipefail
 
+export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 STATE_DIR="${REPO_ROOT}/.agent-state"
 
