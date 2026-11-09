@@ -24,7 +24,7 @@
 set -euo pipefail
 
 export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=codex-lib.sh
@@ -61,8 +61,15 @@ validate_attach_file() {
   local raw_path="$1" resolved=""
   [ -f "$raw_path" ] || { echo "ERROR: Attached file not found: '${raw_path}'" >&2; exit 1; }
   resolved=$(realpath "$raw_path" 2>/dev/null || echo "")
-  if [[ "$resolved" != "${CODEX_REPO_ROOT}/"* ]]; then
-    echo "ERROR: Attached file must reside inside ${CODEX_REPO_ROOT} (got '${resolved}')" >&2
+  if command -v cygpath >/dev/null 2>&1; then
+    resolved="$(cygpath -m "$resolved" 2>/dev/null || echo "$resolved")"
+  fi
+  local root_check="$CODEX_REPO_ROOT"
+  if command -v cygpath >/dev/null 2>&1; then
+    root_check="$(cygpath -m "$root_check" 2>/dev/null || echo "$root_check")"
+  fi
+  if [[ "$resolved" != "${root_check}/"* ]] && [[ "$resolved" != "$root_check" ]]; then
+    echo "ERROR: Attached file must reside inside ${root_check} (got '${resolved}')" >&2
     exit 1
   fi
   if echo "$resolved" | grep -qiE '(/\.git/|/\.env|secret|\.key$|\.pem$|id_rsa)'; then

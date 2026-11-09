@@ -5,18 +5,28 @@
 # Initializes any Git repository with the Antigravity Multi-Model Orchestrator,
 # programmatic enforcement hooks, and hard gatekeeper integration.
 #
+# Supports:
+#   - Generic repositories
+#   - Home Assistant (Oraiokastro) & Antigravity Brain workspaces
+#   - Cross-platform paths (Linux + Windows Git Bash)
+#   - Strict preservation of existing .agents/rules/ (e.g. ha_credentials.md)
+#
 # Usage:
 #   agy-init-workspace [TARGET_DIR]
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "${USERPROFILE:-/home/nick}")}"
 export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
-TARGET_DIR="${1:-.}"
-TARGET_DIR="$(realpath "$TARGET_DIR")"
+RAW_DIR="${1:-.}"
+if command -v cygpath >/dev/null 2>&1; then
+  TARGET_DIR="$(cygpath -m "$(realpath "$RAW_DIR" 2>/dev/null || pwd)")"
+else
+  TARGET_DIR="$(realpath "$RAW_DIR" 2>/dev/null || pwd)"
+fi
 
-SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 if [ ! -d "${REPO_DIR}/workspace-template" ]; then
   REPO_DIR="${HOME}/Development/antigravity-orchestrator"
@@ -31,37 +41,141 @@ if [ ! -d "${TARGET_DIR}/.git" ]; then
   git -C "$TARGET_DIR" init -b main
 fi
 
-# 2. Copy workspace template
+# 2. Setup directory tree
 mkdir -p "${TARGET_DIR}/.agents"
+mkdir -p "${TARGET_DIR}/.agents/rules"
+mkdir -p "${TARGET_DIR}/.agents/scripts"
+mkdir -p "${TARGET_DIR}/.agents/skills"
 mkdir -p "${TARGET_DIR}/.agent-state"
 mkdir -p "${TARGET_DIR}/.agent-reports/codex"
 
-# Copy .agents files
-cp -r "${TEMPLATE_DIR}/.agents/hooks.json" "${TARGET_DIR}/.agents/"
-cp -r "${TEMPLATE_DIR}/.agents/rules" "${TARGET_DIR}/.agents/"
-cp -r "${TEMPLATE_DIR}/.agents/scripts" "${TARGET_DIR}/.agents/"
-cp -r "${TEMPLATE_DIR}/.agents/skills" "${TARGET_DIR}/.agents/"
+# Copy hooks, scripts, skills
+cp -f "${TEMPLATE_DIR}/.agents/hooks.json" "${TARGET_DIR}/.agents/"
+cp -rf "${TEMPLATE_DIR}/.agents/scripts/"* "${TARGET_DIR}/.agents/scripts/"
+cp -rf "${TEMPLATE_DIR}/.agents/skills/"* "${TARGET_DIR}/.agents/skills/"
+echo "   ✓ Installed .agents/hooks.json"
+echo "   ✓ Installed .agents/scripts/"
+echo "   ✓ Installed .agents/skills/"
 
-# Only copy PROJECT_KNOWLEDGE.md if neither .agents/PROJECT_KNOWLEDGE.md nor root PROJECT_KNOWLEDGE.md already exists
-if [ ! -f "${TARGET_DIR}/.agents/PROJECT_KNOWLEDGE.md" ] && [ ! -f "${TARGET_DIR}/PROJECT_KNOWLEDGE.md" ]; then
-  cp "${TEMPLATE_DIR}/.agents/PROJECT_KNOWLEDGE.md" "${TARGET_DIR}/.agents/"
-  echo "📄 Created .agents/PROJECT_KNOWLEDGE.md"
-else
-  echo "ℹ️  Preserved existing PROJECT_KNOWLEDGE.md"
+# Safe rules copy: NEVER overwrite existing rule files
+for rule_file in "${TEMPLATE_DIR}/.agents/rules"/*; do
+  [ -f "$rule_file" ] || continue
+  bn="$(basename "$rule_file")"
+  if [ ! -f "${TARGET_DIR}/.agents/rules/${bn}" ]; then
+    cp "$rule_file" "${TARGET_DIR}/.agents/rules/${bn}"
+    echo "   ✓ Installed rule: ${bn}"
+  else
+    echo "   ℹ️ Preserved existing rule: ${bn}"
+  fi
+done
+
+# 3. Detect Home Assistant Workspace
+IS_HA_WORKSPACE=0
+if [ -d "${TARGET_DIR}/repo/antigravity_brain" ] || \
+   [ -d "${TARGET_DIR}/antigravity_addon" ] || \
+   [ -d "${TARGET_DIR}/antigravity_component" ] || \
+   [ -f "${TARGET_DIR}/.agents/rules/ha_credentials.md" ] || \
+   [[ "${TARGET_DIR}" =~ /ha$ ]] || [[ "${TARGET_DIR}" =~ \\ha$ ]]; then
+  IS_HA_WORKSPACE=1
 fi
 
-# Copy AGENTS.md only if neither root AGENTS.md nor .agents/AGENTS.md already exists
-if [ ! -f "${TARGET_DIR}/AGENTS.md" ] && [ ! -f "${TARGET_DIR}/.agents/AGENTS.md" ]; then
-  cp "${TEMPLATE_DIR}/AGENTS.md" "${TARGET_DIR}/"
+# 4. Protect Sensitive Credentials in .gitignore
+GITIGNORE="${TARGET_DIR}/.gitignore"
+if [ ! -f "$GITIGNORE" ]; then
+  cat <<'EOF' > "$GITIGNORE"
+# Home Assistant credentials & sensitive rules
+.agents/rules/*credentials*.md
+.agent-state/
+.agent-reports/
+.last-staging-deploy
+EOF
+  echo "   ✓ Created .gitignore with credentials protection"
+else
+  if ! grep -q '\*credentials\*\.md' "$GITIGNORE" 2>/dev/null; then
+    printf "\n# Home Assistant credentials & sensitive rules\n.agents/rules/*credentials*.md\n.agent-state/\n.agent-reports/\n.last-staging-deploy\n" >> "$GITIGNORE"
+    echo "   ✓ Appended credentials protection to .gitignore"
+  else
+    echo "   ℹ️ .gitignore already protects credentials"
+  fi
+fi
+
+# 5. Manage .agents/PROJECT_KNOWLEDGE.md
+PK_FILE="${TARGET_DIR}/.agents/PROJECT_KNOWLEDGE.md"
+if [ ! -f "$PK_FILE" ]; then
+  if [ "$IS_HA_WORKSPACE" -eq 1 ]; then
+    cat <<EOF > "$PK_FILE"
+# Project Architecture & Knowledge Index — Home Assistant (Oraiokastro) & Antigravity Brain
+
+## 1. Overview & Architecture Index
+This repository houses the Home Assistant (Oraiokastro) integration and Antigravity Brain add-on ecosystem, protected by the Antigravity Multi-Model Orchestrator and Gatekeeper enforcement layer.
+
+### Core Architecture Components
+- **Root Project**: Home Assistant workspace (${TARGET_DIR}).
+- **Antigravity Brain Add-on**: \`repo/antigravity_brain\` & \`antigravity_addon\` (Supervisor add-on running the Antigravity Brain intelligence service).
+- **Antigravity Custom Component**: \`antigravity_component\` (\`custom_components/antigravity\` integration inside Home Assistant Core).
+- **Agent Rules & HA Credentials**: \`.agents/rules/ha_credentials.md\` (loaded on demand for Home Assistant API/SSH/deployment operations, strictly ignored by git and never committed).
+- **Enforcement Layer**: \`.agents/hooks.json\`, \`.agents/scripts/\`, \`.agents/rules/\`, and \`.agent-state/\`.
+- **Knowledge Vault**: \`.agents/PROJECT_KNOWLEDGE.md\` (architecture facts & changelog).
+- **Skills Vault**: \`.agents/skills/*/SKILL.md\` (reusable operational playbooks & procedures).
+
+---
+
+## 2. Pure Zero-Hands-On Orchestrator & 4-Pool Model Routing
+1. **Universal Parent Orchestrator (Default: \`Gemini 4 Argon Medium\`)**: Operates strictly as a **Pure Dispatcher / Orchestrator** (0 hands-on file reads/edits/builds in parent context, maintaining parent turns at <35K tokens with ~1s latency).
+2. **External-First Frontier Offload (\`frontier-orchestrate.sh\`)**:
+   - \`T1\` Fast Explorer (\`Model: "flash"\` — \`Gemini 3.8 Flash\`, \`Flash I/O\` thinking): Codebase exploration, log slicing, read-only queries.
+   - \`T2\` UI / Frontend / Tests (\`frontier-orchestrate.sh --tier ui\`: Claude Sonnet 4.6 -> Codex gpt-5.6-terra med -> DeepSeek-V4-Pro).
+   - \`T3\` Multi-Service / Backend (\`frontier-orchestrate.sh --tier backend\`: Codex gpt-6-astra high -> Claude Sonnet 4.6 -> DeepSeek-V4-Pro).
+   - \`T4\` Critical Architecture & Security (\`codex-rca.sh\` / \`frontier-orchestrate.sh --tier deep\`: Codex gpt-6-astra xhigh -> Claude Opus 4.6 high -> DeepSeek-V4-Pro).
+   - Release & Gatekeeper Worker: Executes QA, Regression, Docs, Vault, Skills, and Review gates.
+3. **Root Gatekeeper (\`agy-gatekeeper.service\` on \`127.0.0.1:18099\`)**: Cryptographic HMAC signing and verification of \`.agent-state/*.json\`.
+
+---
+
+## 3. Operating Rules & Invariants
+1. **Single Writer**: Antigravity is the only agent with write access; external CLIs (Codex, Claude Code, OpenCode) execute strictly read-only.
+2. **HA Credentials Security**: Never commit or expose passwords, bearer tokens, or SSH keys from \`.agents/rules/ha_credentials.md\`.
+3. **Execution Evidence**: Never declare a task complete or a check passed without concrete execution output.
+4. **Autonomous Skills Distillation**: Update or synthesize \`.agents/skills/<name>/SKILL.md\` whenever new operational procedures or debugging playbooks are discovered.
+
+---
+
+## 📝 Recent Outcomes
+<!-- Chronological record of completed architectural changes, features, and fixes -->
+- Initialized Home Assistant (Oraiokastro) & Antigravity Brain workspace with Antigravity 4-Pool Multi-Model Orchestrator & agy-gatekeeper enforcement.
+EOF
+    echo "📄 Created tailored Home Assistant .agents/PROJECT_KNOWLEDGE.md"
+  else
+    cp "${TEMPLATE_DIR}/.agents/PROJECT_KNOWLEDGE.md" "$PK_FILE"
+    echo "📄 Created .agents/PROJECT_KNOWLEDGE.md"
+  fi
+else
+  echo "ℹ️  Preserved existing .agents/PROJECT_KNOWLEDGE.md"
+fi
+
+# 6. Manage AGENTS.md
+AGENTS_FILE="${TARGET_DIR}/AGENTS.md"
+if [ ! -f "$AGENTS_FILE" ]; then
+  cp "${TEMPLATE_DIR}/AGENTS.md" "$AGENTS_FILE"
   echo "📄 Created AGENTS.md"
 else
   echo "ℹ️  Preserved existing AGENTS.md"
 fi
 
+if [ "$IS_HA_WORKSPACE" -eq 1 ]; then
+  if ! grep -q 'ha_credentials\.md' "$AGENTS_FILE" 2>/dev/null; then
+    cat <<'EOF' >> "$AGENTS_FILE"
+
+- **HOME ASSISTANT CREDENTIALS & SENSITIVE RULES**: When executing Home Assistant API, SSH, or deployment tasks, load `.agents/rules/ha_credentials.md` on demand for endpoints, bearer tokens, and secrets. NEVER print secrets or commit this file to git.
+EOF
+    echo "   ✓ Added Home Assistant credentials reference to AGENTS.md"
+  fi
+fi
+
 # Ensure executable scripts
 chmod +x "${TARGET_DIR}"/.agents/scripts/*.sh 2>/dev/null || true
 
-# 3. Install Git Hooks
+# 7. Install Git Hooks
 mkdir -p "${TARGET_DIR}/.git/hooks"
 
 cat << 'EOF' > "${TARGET_DIR}/.git/hooks/pre-commit"
@@ -69,7 +183,10 @@ cat << 'EOF' > "${TARGET_DIR}/.git/hooks/pre-commit"
 # Antigravity Gatekeeper Native Pre-Commit Hook
 set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-exec "${REPO_ROOT}/.agents/scripts/commit-gate.sh" --git-hook
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_ROOT="$(cygpath -m "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")"
+fi
+exec bash "${REPO_ROOT}/.agents/scripts/commit-gate.sh" --git-hook
 EOF
 chmod +x "${TARGET_DIR}/.git/hooks/pre-commit"
 
@@ -78,6 +195,9 @@ cat << 'EOF' > "${TARGET_DIR}/.git/hooks/post-commit"
 # Antigravity Gatekeeper Native Post-Commit Hook
 set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_ROOT="$(cygpath -m "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")"
+fi
 HEAD_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
 if [ -n "$HEAD_SHA" ]; then
   curl -sf -X POST -H "Content-Type: application/json" \
@@ -88,18 +208,18 @@ exit 0
 EOF
 chmod +x "${TARGET_DIR}/.git/hooks/post-commit"
 
-# 4. Check Gatekeeper Service Status
+# 8. Check Gatekeeper Service Status
 echo ""
 if curl -sf "http://127.0.0.1:18099/api/gatekeeper/health" >/dev/null 2>&1; then
   echo "✅ agy-gatekeeper.service is active and healthy on 127.0.0.1:18099."
 else
   echo "⚠️  agy-gatekeeper.service is NOT responding on 127.0.0.1:18099."
-  echo "   To install the root gatekeeper daemon, run:"
-  echo "   sudo ${REPO_DIR}/gatekeeper/install-gatekeeper.sh"
+  echo "   To start the gatekeeper daemon, run install.sh or install.ps1."
 fi
 
 echo ""
 echo "🎉 Workspace initialized successfully!"
+echo "   - Mode: $([ "$IS_HA_WORKSPACE" -eq 1 ] && echo "Home Assistant (Oraiokastro)" || echo "Generic Repository")"
 echo "   - .agents/hooks.json (Lifecycle enforcement hooks)"
 echo "   - .agents/scripts/ (Frontier orchestrator & gate runners)"
 echo "   - .git/hooks/pre-commit & post-commit"

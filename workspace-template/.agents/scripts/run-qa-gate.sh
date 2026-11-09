@@ -7,10 +7,10 @@
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
-
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_ROOT="$(cygpath -m "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")"
+fi
 STATE_DIR="${REPO_ROOT}/.agent-state"
 SIGN_SCRIPT="${REPO_ROOT}/.agents/scripts/sign-gate.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,10 +98,20 @@ echo ""
 echo "--- Check 3: Python syntax verification ---"
 CHANGED_PY=$(git diff HEAD --name-only 2>/dev/null | grep '\.py$' || true)
 if [ -n "$CHANGED_PY" ]; then
+  PY_CMD=""
+  if command -v python3 >/dev/null 2>&1; then
+    PY_CMD="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PY_CMD="python"
+  elif command -v py >/dev/null 2>&1; then
+    PY_CMD="py -3"
+  fi
   while IFS= read -r pyf; do
     [ -f "$pyf" ] || continue
-    if ! python3 -m py_compile "$pyf" 2>&1; then
-      ERRORS="${ERRORS}Python syntax error in ${pyf}; "
+    if [ -n "$PY_CMD" ]; then
+      if ! $PY_CMD -m py_compile "$pyf" 2>&1; then
+        ERRORS="${ERRORS}Python syntax error in ${pyf}; "
+      fi
     fi
   done <<< "$CHANGED_PY"
   echo "✅ Python checks completed"

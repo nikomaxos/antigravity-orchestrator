@@ -11,24 +11,27 @@
 // =============================================================================
 const http = require('http');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { execFileSync } = require('child_process');
 
 const HOST = '127.0.0.1';
 const PORT = 18099;
-const IS_ROOT = !(process.getuid && process.getuid() !== 0);
-const USER_HOME = process.env.HOME || os.homedir() || '/home/nick';
+const isWin = process.platform === 'win32';
+const IS_ROOT = !isWin && !(process.getuid && process.getuid() !== 0);
+const USER_HOME = process.env.HOME || os.homedir() || (isWin ? (process.env.USERPROFILE || 'C:\\Users\\Default') : '/home/nick');
+
 const KEY_PATH = process.env.AGY_GATEKEEPER_KEY_PATH || (
-  IS_ROOT
-    ? '/etc/agy-gatekeeper/gate.key'
-    : path.join(USER_HOME, '.config/agy-gatekeeper/gate.key')
+  isWin
+    ? (process.env.PROGRAMDATA ? path.join(process.env.PROGRAMDATA, 'agy-gatekeeper', 'gate.key') : path.join(USER_HOME, '.agy-gatekeeper', 'gate.key'))
+    : (IS_ROOT ? '/etc/agy-gatekeeper/gate.key' : path.join(USER_HOME, '.config/agy-gatekeeper/gate.key'))
 );
+
 const CERTIFIED_COMMITS_PATH = process.env.AGY_GATEKEEPER_COMMITS_PATH || (
-  IS_ROOT
-    ? '/var/lib/agy-gatekeeper/certified-commits.json'
-    : path.join(USER_HOME, '.local/share/agy-gatekeeper/certified-commits.json')
+  isWin
+    ? (process.env.PROGRAMDATA ? path.join(process.env.PROGRAMDATA, 'agy-gatekeeper', 'certified-commits.json') : path.join(USER_HOME, '.agy-gatekeeper', 'certified-commits.json'))
+    : (IS_ROOT ? '/var/lib/agy-gatekeeper/certified-commits.json' : path.join(USER_HOME, '.local/share/agy-gatekeeper/certified-commits.json'))
 );
 
 const ALLOWED_GATES = new Set([
@@ -63,6 +66,29 @@ const CODEX_STAGED_EXCLUDES = [
   ':(exclude)docs'
 ];
 
+function getBashCmd() {
+  if (!isWin) return 'bash';
+  const candidates = [
+    'bash',
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe')
+  ];
+  for (const c of candidates) {
+    if (c === 'bash') {
+      try {
+        execFileSync('bash', ['--version'], { stdio: 'ignore' });
+        return 'bash';
+      } catch (_) {}
+    } else {
+      try {
+        if (fs.existsSync(c)) return c;
+      } catch (_) {}
+    }
+  }
+  return 'bash';
+}
+
 function getMasterSecret() {
   let secret = '';
   if (fs.existsSync(KEY_PATH)) {
@@ -74,12 +100,12 @@ function getMasterSecret() {
     secret = crypto.randomBytes(32).toString('hex');
     fs.mkdirSync(path.dirname(KEY_PATH), { recursive: true, mode: 0o700 });
     fs.writeFileSync(KEY_PATH, secret + '\n', { mode: 0o600 });
-    try {
-      if (IS_ROOT) {
+    if (!isWin) {
+      try {
         fs.chownSync(KEY_PATH, 0, 0);
-      }
-      fs.chmodSync(KEY_PATH, 0o600);
-    } catch (_) {}
+        fs.chmodSync(KEY_PATH, 0o600);
+      } catch (_) {}
+    }
   }
   return secret;
 }
@@ -89,22 +115,24 @@ function syncWorkspaceHookSecret(workspace, secret) {
   if (fs.existsSync(hookDir)) {
     const hookKeyPath = path.join(hookDir, '.gate-secret');
     try {
-      try {
-        if ((fs.existsSync(hookKeyPath) || true) && fs.lstatSync(hookKeyPath).isSymbolicLink()) {
-          fs.unlinkSync(hookKeyPath);
-        }
-      } catch (_) {}
       fs.writeFileSync(hookKeyPath, secret + '\n', { mode: 0o600 });
-      if (IS_ROOT) {
+      if (!isWin) {
         fs.chownSync(hookKeyPath, 0, 0);
+        fs.chmodSync(hookKeyPath, 0o600);
       }
-      fs.chmodSync(hookKeyPath, 0o600);
     } catch (_) {}
   }
 }
 
 function resolveWorkspace(raw) {
-  const ws = path.resolve(raw || process.cwd());
+  let ws = String(raw || process.cwd()).trim();
+  if (isWin) {
+    const match = ws.match(/^\/([a-zA-Z])\/(.*)$/);
+    if (match) {
+      ws = `${match[1].toUpperCase()}:/${match[2]}`;
+    }
+  }
+  ws = path.resolve(ws);
   if (!fs.existsSync(path.join(ws, '.git'))) {
     throw new Error(`Directory is not a Git repository: ${ws}`);
   }
@@ -112,6 +140,7 @@ function resolveWorkspace(raw) {
 }
 
 function getWorkspaceOwnership(workspace) {
+  if (isWin) return { uid: 0, gid: 0 };
   try {
     const st = fs.statSync(workspace);
     return { uid: st.uid, gid: st.gid };
@@ -122,7 +151,8 @@ function getWorkspaceOwnership(workspace) {
 
 function runGit(workspace, args) {
   try {
-    return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', `safe.directory=${workspace}`, '-C', workspace, ...args], {
+    const wsNormalized = isWin ? workspace.replace(/\\/g, '/') : workspace;
+    return execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', `safe.directory=${wsNormalized}`, '-c', 'safe.directory=*', '-C', workspace, ...args], {
       encoding: 'utf8',
       maxBuffer: 50 * 1024 * 1024
     });
@@ -140,13 +170,16 @@ function getParentHead(workspace) {
 }
 
 function getCurrentWorktreeHash(workspace) {
+  const wsUnix = workspace.replace(/\\/g, '/');
+  const bashCmd = getBashCmd();
   try {
-    const out = execFileSync('bash', ['-c', `
-      cd "$1" && {
-        git -c core.fsmonitor=false -c "safe.directory=$1" diff HEAD -- . ":(exclude).agent-state" ":(exclude).agent-reports" ":(exclude).last-staging-deploy" ":(exclude)*.md" ":(exclude).agents/skills" ":(exclude)platform-docs" ":(exclude)docs" 2>/dev/null || true
-        git -c core.fsmonitor=false -c "safe.directory=$1" ls-files --others --exclude-standard -z -- . ":(exclude).agent-state" ":(exclude).agent-reports" ":(exclude).last-staging-deploy" ":(exclude)*.md" ":(exclude).agents/skills" ":(exclude)platform-docs" ":(exclude)docs" 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
+    const out = execFileSync(bashCmd, ['-c', `
+      cd "${wsUnix}"
+      {
+        git -c "safe.directory=${wsUnix}" -c "safe.directory=*" diff HEAD -- . ":(exclude).agent-state" ":(exclude).agent-reports" ":(exclude).last-staging-deploy" ":(exclude)*.md" ":(exclude).agents/skills" ":(exclude)platform-docs" ":(exclude)docs" 2>/dev/null || true
+        git -c "safe.directory=${wsUnix}" -c "safe.directory=*" ls-files --others --exclude-standard -z -- . ":(exclude).agent-state" ":(exclude).agent-reports" ":(exclude).last-staging-deploy" ":(exclude)*.md" ":(exclude).agents/skills" ":(exclude)platform-docs" ":(exclude)docs" 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null || true
       } | md5sum | awk '{print $1}'
-    `, '_', workspace], { encoding: 'utf8' }).trim();
+    `], { encoding: 'utf8' }).trim();
     if (out) return out;
   } catch (_) {}
   const diff = runGit(workspace, ['diff', 'HEAD', '--', '.', ...NON_CODE_WORKTREE_EXCLUDES]);
@@ -155,7 +188,7 @@ function getCurrentWorktreeHash(workspace) {
 
 function getStagedFiles(workspace) {
   const out = runGit(workspace, ['diff', '--cached', '--name-only', '--', '.', ...CODEX_STAGED_EXCLUDES]).trim();
-  return out ? out.split('\n').filter(Boolean) : [];
+  return out ? out.split('\n').filter(Boolean).map(f => f.replace(/\\/g, '/')) : [];
 }
 
 function getStagedFingerprint(workspace) {
@@ -168,7 +201,10 @@ function hasCodeChangesForVault(workspace) {
   const staged = runGit(workspace, ['diff', '--cached', '--name-only']).trim().split('\n').filter(Boolean);
   const all = Array.from(new Set([...unstaged, ...staged]));
   // Any file not in .agents/, not in docs/, and not *.md is considered code/config
-  return all.some((f) => !f.startsWith('.agents/') && !f.startsWith('.agent-state/') && !f.startsWith('docs/') && !f.startsWith('platform-docs/') && !f.endsWith('.md') && !f.endsWith('.txt'));
+  return all.some((rawFile) => {
+    const f = rawFile.replace(/\\/g, '/');
+    return !f.startsWith('.agents/') && !f.startsWith('.agent-state/') && !f.startsWith('docs/') && !f.startsWith('platform-docs/') && !f.endsWith('.md') && !f.endsWith('.txt');
+  });
 }
 
 function hasActualVaultDiff(workspace) {
@@ -223,6 +259,10 @@ function getExpectedRunner(workspace, gate) {
 }
 
 function verifyKernelPeerLineage(remotePort, gate, workspace) {
+  if (isWin) {
+    // Windows does not have /proc/net/tcp. Rely on HMAC-SHA256 and localhost binding.
+    return { ok: true };
+  }
   const expectedRunner = getExpectedRunner(workspace, gate);
   if (!expectedRunner) {
     return { ok: true };
@@ -443,12 +483,18 @@ const server = http.createServer(async (req, res) => {
 
       // 3. Additional objective checks per gate
       if (gate === 'qa' && payload.status === 'PASS') {
-        const changedSh = runGit(workspace, ['diff', 'HEAD', '--name-only']).trim().split('\n').filter((f) => f.endsWith('.sh'));
+        const changedSh = runGit(workspace, ['diff', 'HEAD', '--name-only'])
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((f) => f.replace(/\\/g, '/'))
+          .filter((f) => f.endsWith('.sh'));
         for (const shFile of changedSh) {
           const fullSh = path.join(workspace, shFile);
           if (fs.existsSync(fullSh)) {
             try {
-              execFileSync('bash', ['-n', fullSh], { stdio: 'ignore' });
+              const bashCmd = getBashCmd();
+              execFileSync(bashCmd, ['-n', fullSh], { stdio: 'ignore' });
             } catch (_) {
               return sendJson(res, 422, { ok: false, error: `QA gate rejected: bash -n syntax check failed on ${shFile}` });
             }
@@ -493,14 +539,19 @@ const server = http.createServer(async (req, res) => {
 
       const stateDir = path.join(workspace, '.agent-state');
       fs.mkdirSync(stateDir, { recursive: true });
-      const { uid, gid } = getWorkspaceOwnership(workspace);
-      try { fs.chownSync(stateDir, uid, gid); } catch (_) {}
+      if (!isWin) {
+        const { uid, gid } = getWorkspaceOwnership(workspace);
+        try { fs.chownSync(stateDir, uid, gid); } catch (_) {}
+      }
 
       const targetFile = path.join(stateDir, `${gate}.json`);
       const tmpFile = path.join(stateDir, `.${gate}.json.tmp.${process.pid}.${Date.now()}`);
       fs.writeFileSync(tmpFile, JSON.stringify(signedObj, null, 2) + '\n', { mode: 0o644 });
-      try { fs.chownSync(tmpFile, uid, gid); } catch (_) {}
-      fs.chmodSync(tmpFile, 0o644);
+      if (!isWin) {
+        const { uid, gid } = getWorkspaceOwnership(workspace);
+        try { fs.chownSync(tmpFile, uid, gid); } catch (_) {}
+        try { fs.chmodSync(tmpFile, 0o644); } catch (_) {}
+      }
       fs.renameSync(tmpFile, targetFile);
 
       return sendJson(res, 200, {

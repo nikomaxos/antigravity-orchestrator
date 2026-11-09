@@ -15,9 +15,22 @@
 # Every external CLI invocation verifies `before_fp == after_fp` on the worktree!
 # =============================================================================
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then
+  if [ -n "${USERPROFILE:-}" ]; then
+    if command -v cygpath >/dev/null 2>&1; then
+      HOME="$(cygpath -u "$USERPROFILE")"
+    else
+      HOME="$USERPROFILE"
+    fi
+  elif command -v getent >/dev/null 2>&1; then
+    HOME="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "")"
+  fi
+fi
+export HOME="${HOME:-/home/nick}"
 CODEX_REPO_ROOT="${CODEX_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+if command -v cygpath >/dev/null 2>&1; then
+  CODEX_REPO_ROOT="$(cygpath -m "$CODEX_REPO_ROOT" 2>/dev/null || echo "$CODEX_REPO_ROOT")"
+fi
 CODEX_REPORT_DIR="${CODEX_REPO_ROOT}/.agent-reports/codex"
 CODEX_USAGE_LOG="${CODEX_REPORT_DIR}/usage.log"
 CODEX_SCRIPTS_DIR="${CODEX_REPO_ROOT}/.agents/scripts"
@@ -84,7 +97,6 @@ CODEX_LAST_THREAD_ID=""
 codex_resolve_bin() {
   if [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN}" ]; then echo "${CODEX_BIN}"; return 0; fi
   local home="${HOME}" candidate=""
-  if [ -x "${home}/.local/share/mise/shims/codex" ]; then echo "${home}/.local/share/mise/shims/codex"; return 0; fi
   if [ -x "${home}/.npm-global/bin/codex" ]; then echo "${home}/.npm-global/bin/codex"; return 0; fi
   candidate=$(ls -d "${home}"/.antigravity/extensions/openai.chatgpt-*/bin/linux-*/codex 2>/dev/null | sort -V | tail -1 || true)
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then echo "$candidate"; return 0; fi
@@ -94,7 +106,6 @@ codex_resolve_bin() {
 
 claude_resolve_bin() {
   local home="${HOME}"
-  if [ -x "${home}/.local/share/mise/shims/claude" ]; then echo "${home}/.local/share/mise/shims/claude"; return 0; fi
   if [ -x "${home}/.local/bin/claude" ]; then echo "${home}/.local/bin/claude"; return 0; fi
   if [ -x "${home}/.npm-global/bin/claude" ]; then echo "${home}/.npm-global/bin/claude"; return 0; fi
   if command -v claude >/dev/null 2>&1; then command -v claude; return 0; fi
@@ -103,7 +114,6 @@ claude_resolve_bin() {
 
 opencode_resolve_bin() {
   local home="${HOME}"
-  if [ -x "${home}/.local/share/mise/shims/opencode" ]; then echo "${home}/.local/share/mise/shims/opencode"; return 0; fi
   if [ -x "${home}/.opencode/bin/opencode" ]; then echo "${home}/.opencode/bin/opencode"; return 0; fi
   if [ -x "${home}/.local/bin/opencode" ]; then echo "${home}/.local/bin/opencode"; return 0; fi
   if command -v opencode >/dev/null 2>&1; then command -v opencode; return 0; fi
@@ -217,7 +227,7 @@ codex_build_context() {
   echo "correct, required or forbidden in this codebase and its operations."
   echo
   echo "### .agents/AGENTS.md"
-  cat "$root/.agents/AGENTS.md" 2>/dev/null || cat "$root/AGENTS.md" 2>/dev/null || echo "(missing)"
+  cat "$root/.agents/AGENTS.md" 2>/dev/null || echo "(missing)"
   local f
   for f in "$root"/.agents/rules/*.md; do
     [ -f "$f" ] || continue
@@ -227,7 +237,7 @@ codex_build_context() {
   done
   echo
   echo "### .agents/PROJECT_KNOWLEDGE.md"
-  sed -n '1,/^## 📝 Recent/p' "$root/.agents/PROJECT_KNOWLEDGE.md" 2>/dev/null || cat "$root/.agents/PROJECT_KNOWLEDGE.md" 2>/dev/null || sed -n '1,/^## 📝 Recent/p' "$root/PROJECT_KNOWLEDGE.md" 2>/dev/null || cat "$root/PROJECT_KNOWLEDGE.md" 2>/dev/null || true
+  sed -n '1,/^## 📝 Recent/p' "$root/.agents/PROJECT_KNOWLEDGE.md" 2>/dev/null || cat "$root/.agents/PROJECT_KNOWLEDGE.md" 2>/dev/null || true
 }
 
 codex_build_compact_ui_context() {

@@ -11,13 +11,13 @@
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
-
 GATE_FILE="$1"
 CONTENT="$2"
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_ROOT="$(cygpath -m "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")"
+fi
 GATE_NAME=$(basename "$GATE_FILE" .json)
 
 REQ_BODY=$(jq -n -c \

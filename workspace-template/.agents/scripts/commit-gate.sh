@@ -8,9 +8,6 @@
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
-
 GIT_HOOK_MODE=0
 if [ "${1:-}" = "--git-hook" ]; then
   GIT_HOOK_MODE=1
@@ -35,6 +32,9 @@ if [ "$GIT_HOOK_MODE" -eq 0 ] && ! echo "$COMMAND_LINE" | grep -iqE 'git[[:space
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_ROOT="$(cygpath -m "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")"
+fi
 STATE_DIR="${REPO_ROOT}/.agent-state"
 
 cd "$REPO_ROOT" 2>/dev/null || true
@@ -226,8 +226,8 @@ GK_MODE="commit"
 if echo "$COMMAND_LINE" | grep -iqE 'git[[:space:]]+push'; then
   GK_MODE="deploy"
 fi
-if ! curl -sf "http://127.0.0.1:18099/api/gatekeeper/verify-status?mode=${GK_MODE}&workspace=${REPO_ROOT}" >/dev/null 2>&1; then
-  GK_BODY=$(curl -s "http://127.0.0.1:18099/api/gatekeeper/verify-status?mode=${GK_MODE}&workspace=${REPO_ROOT}" 2>/dev/null || echo '{"errors":["agy-gatekeeper.service unreachable on 127.0.0.1:18099"]}')
+if ! curl -G -sf "http://127.0.0.1:18099/api/gatekeeper/verify-status" --data-urlencode "mode=${GK_MODE}" --data-urlencode "workspace=${REPO_ROOT}" >/dev/null 2>&1; then
+  GK_BODY=$(curl -G -s "http://127.0.0.1:18099/api/gatekeeper/verify-status" --data-urlencode "mode=${GK_MODE}" --data-urlencode "workspace=${REPO_ROOT}" 2>/dev/null || echo '{"errors":["agy-gatekeeper.service unreachable on 127.0.0.1:18099"]}')
   GK_ERRS=$(echo "$GK_BODY" | jq -r '(.errors // ["gatekeeper verification failed"]) | join("; ")' 2>/dev/null || echo "gatekeeper verification failed")
   FAILED_CHECKS="${FAILED_CHECKS}Root Gatekeeper (${GK_MODE}) rejected: ${GK_ERRS}; "
 fi

@@ -11,9 +11,6 @@
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
-
 INPUT=$(cat || true)
 TERM_REASON=$(echo "$INPUT" | jq -r '.terminationReason // ""' 2>/dev/null || echo "")
 
@@ -23,6 +20,9 @@ if [ "$TERM_REASON" != "model_stop" ]; then
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_ROOT="$(cygpath -m "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")"
+fi
 STATE_DIR="${REPO_ROOT}/.agent-state"
 
 cd "$REPO_ROOT" || exit 0
@@ -127,7 +127,7 @@ if [ -f "$STATE_DIR/staging.json" ]; then
 fi
 
 # 7. Root Gatekeeper Service verification (mode=stop)
-GK_HTTP=$(curl -s -o /tmp/gk-stop-check.$$.json -w "%{http_code}" "http://127.0.0.1:18099/api/gatekeeper/verify-status?mode=stop&workspace=${REPO_ROOT}" 2>/dev/null || echo "000")
+GK_HTTP=$(curl -G -s -o /tmp/gk-stop-check.$$.json -w "%{http_code}" "http://127.0.0.1:18099/api/gatekeeper/verify-status" --data-urlencode "mode=stop" --data-urlencode "workspace=${REPO_ROOT}" 2>/dev/null || echo "000")
 if [ "$GK_HTTP" = "000" ]; then
   rm -f "/tmp/gk-stop-check.$$.json"
   MISSING_GATES="${MISSING_GATES}Root Gatekeeper (stop): agy-gatekeeper.service unreachable on 127.0.0.1:18099; "

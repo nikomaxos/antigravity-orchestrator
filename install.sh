@@ -11,9 +11,9 @@
 set -euo pipefail
 
 export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
-SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WITH_GATEKEEPER=0
 SKIP_CLIS=0
@@ -28,7 +28,7 @@ Usage:
   ./install.sh [OPTIONS]
 
 Options:
-  --with-gatekeeper  Also install and start agy-gatekeeper.service (root if sudo available, or --user fallback)
+  --with-gatekeeper  Also install and start the root-owned agy-gatekeeper.service (requires sudo)
   --skip-clis        Skip automatic CLI installation (Codex, Claude, OpenCode)
   -h, --help         Show this help message
 EOF
@@ -67,17 +67,8 @@ mkdir -p "${HOME}/.config/opencode"
 if [ ! -f "${HOME}/.config/opencode/opencode.json" ]; then
   cp "${SCRIPT_DIR}/global/opencode/opencode.json" "${HOME}/.config/opencode/opencode.json"
   echo "   ✓ Created ~/.config/opencode/opencode.json"
-elif command -v jq >/dev/null 2>&1; then
-  TMP_OC="$(mktemp)"
-  if jq -s '.[0] * .[1]' "${HOME}/.config/opencode/opencode.json" "${SCRIPT_DIR}/global/opencode/opencode.json" > "${TMP_OC}"; then
-    mv "${TMP_OC}" "${HOME}/.config/opencode/opencode.json"
-    echo "   ✓ Merged global OpenCode rules into existing ~/.config/opencode/opencode.json"
-  else
-    rm -f "${TMP_OC}"
-    echo "   ⚠️ Failed to merge ~/.config/opencode/opencode.json; preserved existing file"
-  fi
 else
-  echo "   ℹ️ Preserved existing ~/.config/opencode/opencode.json (jq not found)"
+  echo "   ℹ️ Preserved existing ~/.config/opencode/opencode.json"
 fi
 
 # 4. Install Helper Binaries into ~/.local/bin/
@@ -85,23 +76,27 @@ echo ""
 echo "🔧 4. Installing CLI binaries into ~/.local/bin/..."
 mkdir -p "${HOME}/.local/bin"
 cp -f "${SCRIPT_DIR}/bin/agy-init-workspace" "${HOME}/.local/bin/agy-init-workspace"
+cp -f "${SCRIPT_DIR}/bin/agy-init-workspace.ps1" "${HOME}/.local/bin/agy-init-workspace.ps1" 2>/dev/null || true
 cp -f "${SCRIPT_DIR}/bin/agy-arch-sync" "${HOME}/.local/bin/agy-arch-sync"
 cp -f "${SCRIPT_DIR}/bin/frontier-orchestrate" "${HOME}/.local/bin/frontier-orchestrate"
+cp -f "${SCRIPT_DIR}/bin/frontier-orchestrate.ps1" "${HOME}/.local/bin/frontier-orchestrate.ps1" 2>/dev/null || true
 cp -f "${SCRIPT_DIR}/bin/agy-setup-clis" "${HOME}/.local/bin/agy-setup-clis"
 chmod +x "${HOME}/.local/bin/agy-init-workspace" \
          "${HOME}/.local/bin/agy-arch-sync" \
          "${HOME}/.local/bin/frontier-orchestrate" \
          "${HOME}/.local/bin/agy-setup-clis"
 echo "   ✓ ~/.local/bin/agy-init-workspace"
+echo "   ✓ ~/.local/bin/agy-init-workspace.ps1"
 echo "   ✓ ~/.local/bin/agy-arch-sync"
 echo "   ✓ ~/.local/bin/frontier-orchestrate"
+echo "   ✓ ~/.local/bin/frontier-orchestrate.ps1"
 echo "   ✓ ~/.local/bin/agy-setup-clis"
 
 # Ensure PATH in shell startup
 for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
   if [ -f "$rc" ]; then
     if ! grep -q '\.local/bin' "$rc" 2>/dev/null; then
-      echo 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:${PATH}"' >> "$rc"
+      echo 'export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:${PATH}"' >> "$rc"
     fi
   fi
 done
@@ -116,15 +111,8 @@ fi
 # 6. Optional Gatekeeper Installation
 if [ "$WITH_GATEKEEPER" -eq 1 ]; then
   echo ""
-  echo "🛡️ 6. Installing agy-gatekeeper.service..."
-  if [ "$(id -u)" -eq 0 ]; then
-    bash "${SCRIPT_DIR}/gatekeeper/install-gatekeeper.sh"
-  elif sudo -n true 2>/dev/null; then
-    sudo bash "${SCRIPT_DIR}/gatekeeper/install-gatekeeper.sh"
-  else
-    echo "   ℹ️ Passwordless sudo not available; installing as systemd --user service..."
-    bash "${SCRIPT_DIR}/gatekeeper/install-gatekeeper.sh" --user
-  fi
+  echo "🛡️ 6. Installing agy-gatekeeper.service via sudo..."
+  sudo bash "${SCRIPT_DIR}/gatekeeper/install-gatekeeper.sh"
 else
   echo ""
   echo "ℹ️  Gatekeeper Service:"
@@ -133,7 +121,6 @@ else
   else
     echo "   To install the root gatekeeper service on this machine, run:"
     echo "   sudo ${SCRIPT_DIR}/gatekeeper/install-gatekeeper.sh"
-    echo "   (Or user-level fallback: ${SCRIPT_DIR}/gatekeeper/install-gatekeeper.sh --user)"
   fi
 fi
 

@@ -26,7 +26,36 @@
 
 ---
 
-## 🚀 Γρήγορη Εγκατάσταση (Σε Νέο Μηχάνημα)
+## 🚀 Εγκατάσταση σε Windows (Lenovo Laptop / PowerShell)
+
+Για το laptop με Windows (π.χ. Lenovo με Home Assistant workspace στο `C:\Users\parda\OneDrive\Dev\ha`):
+
+### 1. Κλωνοποίηση ή Αποσυμπίεση του Bundle
+Ανοίξτε **PowerShell** (ή Windows Terminal):
+```powershell
+# Αν χρησιμοποιείτε git:
+git clone git@github.com:nikomaxos/antigravity-orchestrator.git $HOME\Development\antigravity-orchestrator
+cd $HOME\Development\antigravity-orchestrator
+
+# Ή αν μεταφέρατε το antigravity-orchestrator-bundle.tar.gz:
+# tar -xzf antigravity-orchestrator-bundle.tar.gz -C $HOME\Development\antigravity-orchestrator
+# cd $HOME\Development\antigravity-orchestrator
+```
+
+### 2. Εκτέλεση του PowerShell Installer (`install.ps1`)
+```powershell
+.\install.ps1
+```
+> [!NOTE]
+> Το `install.ps1` εντοπίζει **αυτόματα** το workspace του Home Assistant στο `C:\Users\parda\OneDrive\Dev\ha` (ή μπορείτε να περάσετε `-WorkspacePath "C:\Users\parda\OneDrive\Dev\ha"`).
+> - **ΔΕΝ αντικαθιστά ούτε διαγράφει** υπάρχοντες κανόνες στο `.agents/rules/` — διατηρεί ακέραιο το `ha_credentials.md`!
+> - Προσθέτει αυτόματα `.agents/rules/*credentials*.md` στο `.gitignore` ώστε να μην διαρρεύσουν ποτέ κωδικοί.
+> - Δημιουργεί εξειδικευμένο `PROJECT_KNOWLEDGE.md` με αναφορές στο Home Assistant (Oraiokastro), `repo/antigravity_brain`, `antigravity_addon`, `antigravity_component` και `ha_credentials.md`.
+> - Εγκαθιστά και εκκινεί το `AgyGatekeeper` background daemon στο `127.0.0.1:18099` (με αυτόματη εκκίνηση στο logon).
+
+---
+
+## 🚀 Εγκατάσταση σε Linux / Git Bash
 
 ### Βήμα 1: Κλωνοποίηση ή Αποσυμπίεση του Bundle
 ```bash
@@ -47,10 +76,10 @@ cd ~/Development/antigravity-orchestrator
 Ο installer:
 1. Εγκαθιστά τους παγκόσμιους κανόνες στο `~/.gemini/config/AGENTS.md` και `~/.gemini/config/GEMINI.md`.
 2. Εγκαθιστά τα παγκόσμια skills (`claude`, `codex`, `opencode`, `multi-model-delegation`, `codex-review`) στο `~/.gemini/config/skills/`.
-3. Ρυθμίζει το προφίλ `readonly-auditor` στο `~/.config/opencode/opencode.json`.
-4. Εγκαθιστά τα βοηθητικά εργαλεία στο `~/.local/bin/` (`agy-init-workspace`, `agy-arch-sync`, `frontier-orchestrate`, `agy-setup-clis`).
+3. Ρυθμίζει το προφίλ `readonly-auditor` στο `~/.config/opencode/opencode.json` (και `%APPDATA%\opencode\opencode.json` στα Windows).
+4. Εγκαθιστά τα βοηθητικά εργαλεία στο `~/.local/bin/` (`agy-init-workspace`, `agy-init-workspace.ps1`, `agy-arch-sync`, `frontier-orchestrate`, `frontier-orchestrate.ps1`, `agy-setup-clis`).
 5. Εγκαθιστά τα external CLIs (`codex`, `claude`, `opencode`).
-6. Εγκαθιστά και ενεργοποιεί την υπηρεσία συστήματος `agy-gatekeeper.service` στο port `18099` (μέσω `sudo`).
+6. Εγκαθιστά και ενεργοποιεί την υπηρεσία `agy-gatekeeper` στο port `18099`.
 
 ---
 
@@ -128,11 +157,14 @@ agy-arch-sync
 ```text
 antigravity-orchestrator/
 ├── README.md                          # Αυτό το αρχείο τεκμηρίωσης
-├── install.sh                         # Κεντρικός εγκαταστάτης
+├── install.sh                         # Κεντρικός εγκαταστάτης (Linux / Git Bash)
+├── install.ps1                        # Κεντρικός εγκαταστάτης (Windows PowerShell)
 ├── bin/
-│   ├── agy-init-workspace             # Αρχικοποίηση νέου project με hard gates
+│   ├── agy-init-workspace             # Αρχικοποίηση νέου project με hard gates (Bash)
+│   ├── agy-init-workspace.ps1         # Αρχικοποίηση νέου project με hard gates (PowerShell)
 │   ├── agy-arch-sync                  # Συγχρονισμός και επανεγκατάσταση
-│   ├── frontier-orchestrate           # Παγκόσμιο CLI frontier routing
+│   ├── frontier-orchestrate           # Παγκόσμιο CLI frontier routing (Bash)
+│   ├── frontier-orchestrate.ps1       # Παγκόσμιο CLI frontier routing (PowerShell)
 │   └── agy-setup-clis                 # Εγκατάσταση, auth & smoke-test των CLIs
 ├── gatekeeper/
 │   ├── server.js                      # Root Gatekeeper HTTP Daemon (Node.js)
