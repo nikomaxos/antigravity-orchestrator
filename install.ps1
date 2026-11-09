@@ -4,6 +4,7 @@
 # Installs global Antigravity configurations, skills, frontier CLIs,
 # helper PowerShell/Bash scripts, and background AgyGatekeeper service.
 #
+# Supports: Windows PowerShell 5.1 & PowerShell Core 7+
 # Usage:
 #   .\install.ps1 [-WorkspacePath <path>] [-SkipClis]
 # =============================================================================
@@ -19,6 +20,13 @@ param(
 $ErrorActionPreference = "Stop"
 
 $scriptDir = $PSScriptRoot
+if (-not $scriptDir) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if (-not $scriptDir) {
+    $scriptDir = (Get-Location).Path
+}
+
 $userHome = $HOME
 if (-not $userHome) { $userHome = $env:USERPROFILE }
 
@@ -84,7 +92,7 @@ foreach ($targetDir in $openCodeTargets) {
             } elseif (-not $existing.agent."readonly-auditor") {
                 $existing.agent | Add-Member -MemberType NoteProperty -Name "readonly-auditor" -Value $template.agent."readonly-auditor"
             }
-            $existing | ConvertTo-Json -Depth 10 | Set-Content -Path $destFile
+            $existing | ConvertTo-Json -Depth 10 | Set-Content -Path $destFile -Encoding UTF8
             Write-Host "   ✓ Updated $destFile (preserved existing provider & keys)" -ForegroundColor Green
         } catch {
             Write-Host "   ℹ️ Preserved existing $destFile" -ForegroundColor DarkGray
@@ -111,7 +119,7 @@ if (-not $SkipClis) {
 }
 
 # -----------------------------------------------------------------------------
-# 5. Install Helper Binaries into ~/.local/bin/ and Update PATH
+# 5. Install Helper Binaries into ~/.local/bin/ and Cache Template
 # -----------------------------------------------------------------------------
 Write-Host "`n🔧 5. Installing helper scripts into $userHome\.local\bin\..." -ForegroundColor Cyan
 $localBin = Join-Path $userHome ".local\bin"
@@ -121,6 +129,15 @@ $binSource = Join-Path $scriptDir "bin"
 if (Test-Path $binSource) {
     Copy-Item -Path "$binSource\*" -Destination $localBin -Recurse -Force
     Write-Host "   ✓ Copied bin tools into $localBin" -ForegroundColor Green
+}
+
+# Cache workspace-template permanently in ~/.local/share
+$localShare = Join-Path $userHome ".local\share\antigravity-orchestrator"
+New-Item -ItemType Directory -Path $localShare -Force | Out-Null
+$srcTemplate = Join-Path $scriptDir "workspace-template"
+if (Test-Path $srcTemplate) {
+    Copy-Item -Path $srcTemplate -Destination $localShare -Recurse -Force
+    Write-Host "   ✓ Cached workspace-template into $localShare" -ForegroundColor Green
 }
 
 # Add $userHome\.local\bin to User PATH if missing
@@ -143,9 +160,16 @@ New-Item -ItemType Directory -Path $gatekeeperLib -Force | Out-Null
 Copy-Item -Path (Join-Path $scriptDir "gatekeeper\server.js") -Destination (Join-Path $gatekeeperLib "server.js") -Force
 Write-Host "   ✓ Installed Gatekeeper daemon at $gatekeeperLib\server.js" -ForegroundColor Green
 
+# Resolve node executable path
+$nodeCmd = "node.exe"
+$foundNode = Get-Command node -ErrorAction SilentlyContinue
+if ($foundNode) {
+    $nodeCmd = $foundNode.Source
+}
+
 # Register for user logon via Registry Run (reliable without admin privileges)
 $runKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$gatekeeperCmd = "node `"$gatekeeperLib\server.js`""
+$gatekeeperCmd = "`"$nodeCmd`" `"$gatekeeperLib\server.js`""
 try {
     Set-ItemProperty -Path $runKeyPath -Name "AgyGatekeeper" -Value $gatekeeperCmd -Force
     Write-Host "   ✓ Registered AgyGatekeeper in HKCU Run (starts on login)" -ForegroundColor Green
@@ -156,7 +180,7 @@ try {
 # Try registering Windows Scheduled Task if possible
 try {
     if (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue) {
-        $taskAction = New-ScheduledTaskAction -Execute "node.exe" -Argument "`"$gatekeeperLib\server.js`""
+        $taskAction = New-ScheduledTaskAction -Execute $nodeCmd -Argument "`"$gatekeeperLib\server.js`""
         $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
         $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 3650)
         Register-ScheduledTask -TaskName "AgyGatekeeper" -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Force -ErrorAction SilentlyContinue | Out-Null
@@ -175,8 +199,8 @@ try {
 
 if (-not $gatekeeperRunning) {
     Write-Host "   Starting AgyGatekeeper daemon in background..." -ForegroundColor DarkGray
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        Start-Process -FilePath "node.exe" -ArgumentList "`"$gatekeeperLib\server.js`"" -WindowStyle Hidden
+    if ($foundNode) {
+        Start-Process -FilePath $nodeCmd -ArgumentList "`"$gatekeeperLib\server.js`"" -WindowStyle Hidden
         Start-Sleep -Seconds 2
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:18099/api/gatekeeper/health" -Method Get -TimeoutSec 2 -ErrorAction Stop
@@ -198,7 +222,7 @@ if (-not $gatekeeperRunning) {
 # -----------------------------------------------------------------------------
 $targetWs = ""
 if ($WorkspacePath -and (Test-Path $WorkspacePath)) {
-    $targetWs = (Resolve-Path $WorkspacePath).Path
+    $targetWs = [System.IO.Path]::GetFullPath($WorkspacePath)
 } elseif (Test-Path "C:\Users\parda\OneDrive\Dev\ha") {
     $targetWs = "C:\Users\parda\OneDrive\Dev\ha"
 }

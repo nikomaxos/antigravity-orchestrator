@@ -7,6 +7,7 @@
 # Supports:
 #   - Generic repositories
 #   - Home Assistant (Oraiokastro) & Antigravity Brain workspaces
+#   - Windows PowerShell 5.1 & PowerShell Core 7+
 #   - Strict preservation of existing .agents/rules/ (e.g. ha_credentials.md)
 # =============================================================================
 [CmdletBinding()]
@@ -17,15 +18,42 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$userHome = $HOME
+if (-not $userHome) { $userHome = $env:USERPROFILE }
+
+$scriptDir = $PSScriptRoot
+if (-not $scriptDir) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if (-not $scriptDir) {
+    $scriptDir = (Get-Location).Path
+}
+
 $repoRoot = Split-Path -Parent $scriptDir
-$templateDir = Join-Path $repoRoot "workspace-template"
+$templateCandidates = @(
+    (Join-Path $repoRoot "workspace-template"),
+    (Join-Path $userHome ".local\share\antigravity-orchestrator\workspace-template"),
+    (Join-Path $userHome ".local\lib\agy-gatekeeper\workspace-template"),
+    (Join-Path $userHome "Development\antigravity-orchestrator\workspace-template"),
+    "C:\Users\parda\Development\antigravity-orchestrator\workspace-template"
+)
+$templateDir = ""
+foreach ($cand in $templateCandidates) {
+    if (Test-Path $cand) {
+        $templateDir = $cand
+        break
+    }
+}
+if (-not $templateDir) {
+    Write-Error "Could not locate workspace-template directory. Please check installation."
+    exit 1
+}
 
 # 1. Resolve Target Directory
 if (-not (Test-Path $WorkspacePath)) {
     New-Item -ItemType Directory -Path $WorkspacePath -Force | Out-Null
 }
-$targetDir = (Resolve-Path $WorkspacePath).Path
+$targetDir = [System.IO.Path]::GetFullPath($WorkspacePath)
 
 Write-Host "`n🚀 Initializing Antigravity Orchestrator in: $targetDir" -ForegroundColor Cyan
 
@@ -36,7 +64,7 @@ if (-not (Test-Path $gitDir)) {
     git -C "$targetDir" init -b main
 }
 
-# 3. Create Required Directory Structure
+# 3. Create Required Directory Structure (PS 5.1 safe)
 $agentsDir = Join-Path $targetDir ".agents"
 $agentStateDir = Join-Path $targetDir ".agent-state"
 $agentReportsDir = Join-Path $targetDir ".agent-reports\codex"
@@ -45,7 +73,12 @@ $scriptsDir = Join-Path $agentsDir "scripts"
 $skillsDir = Join-Path $agentsDir "skills"
 $gitHooksDir = Join-Path $targetDir ".git\hooks"
 
-New-Item -ItemType Directory -Force -Path $agentsDir, $agentStateDir, $agentReportsDir, $rulesDir, $scriptsDir, $skillsDir, $gitHooksDir | Out-Null
+$dirsToCreate = @($agentsDir, $agentStateDir, $agentReportsDir, $rulesDir, $scriptsDir, $skillsDir, $gitHooksDir)
+foreach ($d in $dirsToCreate) {
+    if (-not (Test-Path $d)) {
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+    }
+}
 
 # 4. Copy Control Plane Components
 Copy-Item -Path (Join-Path $templateDir ".agents\hooks.json") -Destination $agentsDir -Force
@@ -89,7 +122,7 @@ $credPattern
 .agent-reports/
 .last-staging-deploy
 "@
-    Set-Content -Path $gitignorePath -Value $initialGitignore
+    Set-Content -Path $gitignorePath -Value $initialGitignore -Encoding UTF8
     Write-Host "   ✓ Created .gitignore with credentials protection" -ForegroundColor Green
 } else {
     $existingGitignore = Get-Content -Path $gitignorePath -Raw
@@ -102,7 +135,7 @@ $credPattern
 .agent-reports/
 .last-staging-deploy
 "@
-        Add-Content -Path $gitignorePath -Value $appendGitignore
+        Add-Content -Path $gitignorePath -Value $appendGitignore -Encoding UTF8
         Write-Host "   ✓ Appended credentials protection to .gitignore" -ForegroundColor Green
     } else {
         Write-Host "   ℹ️ .gitignore already protects credentials" -ForegroundColor DarkGray
@@ -154,7 +187,7 @@ This repository houses the Home Assistant (Oraiokastro) integration and Antigrav
 <!-- Chronological record of completed architectural changes, features, and fixes -->
 - Initialized Home Assistant (Oraiokastro) & Antigravity Brain workspace with Antigravity 4-Pool Multi-Model Orchestrator & agy-gatekeeper enforcement.
 "@
-        Set-Content -Path $pkPath -Value $haKnowledge
+        Set-Content -Path $pkPath -Value $haKnowledge -Encoding UTF8
         Write-Host "📄 Created tailored Home Assistant .agents/PROJECT_KNOWLEDGE.md" -ForegroundColor Green
     } else {
         Copy-Item -Path (Join-Path $templateDir ".agents\PROJECT_KNOWLEDGE.md") -Destination $pkPath
@@ -180,7 +213,7 @@ if ($isHaWorkspace) {
 
 - **HOME ASSISTANT CREDENTIALS & SENSITIVE RULES**: When executing Home Assistant API, SSH, or deployment tasks, load `.agents/rules/ha_credentials.md` on demand for endpoints, bearer tokens, and secrets. NEVER print secrets or commit this file to git.
 "@
-        Add-Content -Path $agentsMdPath -Value $haAgentsRule
+        Add-Content -Path $agentsMdPath -Value $haAgentsRule -Encoding UTF8
         Write-Host "   ✓ Added Home Assistant credentials reference to AGENTS.md" -ForegroundColor Green
     }
 }
@@ -217,8 +250,8 @@ fi
 exit 0
 '@
 
-Set-Content -Path $preCommitPath -Value $preCommitContent -NoNewline
-Set-Content -Path $postCommitPath -Value $postCommitContent -NoNewline
+Set-Content -Path $preCommitPath -Value $preCommitContent -NoNewline -Encoding UTF8
+Set-Content -Path $postCommitPath -Value $postCommitContent -NoNewline -Encoding UTF8
 Write-Host "   ✓ Installed .git/hooks/pre-commit & post-commit" -ForegroundColor Green
 
 # 11. Check Gatekeeper Service

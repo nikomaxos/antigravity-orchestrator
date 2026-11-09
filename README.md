@@ -33,8 +33,8 @@
 ### 1. Κλωνοποίηση ή Αποσυμπίεση του Bundle
 Ανοίξτε **PowerShell** (ή Windows Terminal):
 ```powershell
-# Αν χρησιμοποιείτε git:
-git clone git@github.com:nikomaxos/antigravity-orchestrator.git $HOME\Development\antigravity-orchestrator
+# Αν χρησιμοποιείτε git (Δημόσιο repo - δεν απαιτείται SSH key ή login):
+git clone https://github.com/nikomaxos/antigravity-orchestrator.git $HOME\Development\antigravity-orchestrator
 cd $HOME\Development\antigravity-orchestrator
 
 # Ή αν μεταφέρατε το antigravity-orchestrator-bundle.tar.gz:
