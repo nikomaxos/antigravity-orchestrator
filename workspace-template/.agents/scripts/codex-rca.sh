@@ -6,7 +6,7 @@
 #   1. Pool B: OpenAI Codex CLI (`gpt-6-astra`, effort `xhigh`)
 #   2. Pool C: Anthropic Claude Code CLI (`opus` -> `sonnet`, effort `high`)
 #   3. Pool D: OpenCode CLI + DeepSeek API (`deepseek/deepseek-v4-pro`)
-#   4. Pool A: Exit 2 -> spawn internal `Gemini 4 Argon High` subagent
+#   4. Pool A: Exit 2 -> spawn internal `Gemini 4 Carbon High` subagent
 # =============================================================================
 set -euo pipefail
 
@@ -121,5 +121,5 @@ if [ -n "$USED_LABEL" ] && [ -s "$OUT" ]; then
 fi
 
 echo "⚠️  All external RCA models failed / rate-limited."
-echo "➡️  Falling back to Pool A: Spawn internal Gemini 4 Argon High subagent with problem context."
+echo "➡️  Falling back to Pool A: Spawn internal Gemini 4 Carbon High subagent with problem context."
 exit 2

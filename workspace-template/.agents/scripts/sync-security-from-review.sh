@@ -41,7 +41,7 @@ fi
 if codex_is_security_sensitive_files "$CODE_COMMITTED"; then
   echo "🛡️  HEAD modified security-sensitive infrastructure/auth/enforcement files:"
   printf '%s\n' "$CODE_COMMITTED" | sed 's/^/   - /'
-  echo "➡️  Dedicated Security Reviewer REQUIRED (spawn Claude Opus/Sonnet High or Gemini 4 Argon High subagent, then run write-security-review.sh + run-security-gate.sh)."
+  echo "➡️  Dedicated Security Reviewer REQUIRED (spawn Claude Opus/Sonnet High or Gemini 4 Carbon High subagent, then run write-security-review.sh + run-security-gate.sh)."
   exit 2
 fi
 

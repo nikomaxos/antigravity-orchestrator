@@ -7,7 +7,7 @@
 #                         + Stateful Round-2+ Delta Review (`codex exec resume`)!
 #   2. Pool C (Failover): Anthropic Claude Code CLI (`R1`: sonnet low, `R2`: sonnet high, `R3`: opus/sonnet high)
 #   3. Pool D (Failover): OpenCode CLI + DeepSeek API (`deepseek/deepseek-v4-pro`)
-#   4. Pool A (Last Resort `--fallback`): Internal Antigravity `Gemini 4 Argon High` subagent
+#   4. Pool A (Last Resort `--fallback`): Internal Antigravity `Gemini 4 Carbon High` subagent
 #      (ONLY allowed if Pools B + C + D were all RATE_LIMITED or UNAVAILABLE!)
 #
 # Writes (HMAC-signed): .agent-state/codex-review.json
@@ -126,7 +126,7 @@ if [ "$DIFF_BYTES" -gt "$CODEX_MAX_DIFF_BYTES" ]; then
   exit 3
 fi
 
-# --- MODE: FALLBACK (Pool A: Gemini 4 Argon subagent review) -------------------
+# --- MODE: FALLBACK (Pool A: Gemini 4 Carbon subagent review) -------------------
 if [ "$MODE" = "fallback" ]; then
   [ -z "$FALLBACK_FILE" ] && { echo "❌ Usage: run-codex-review-gate.sh --fallback <path-to-json>" >&2; exit 3; }
   [ ! -f "$FALLBACK_FILE" ] && { echo "❌ Fallback file not found: $FALLBACK_FILE" >&2; exit 3; }
@@ -156,7 +156,7 @@ if [ "$MODE" = "fallback" ]; then
     --arg fp "$FP" \
     --arg ts "$TS" \
     --argjson files "$STAGED_FILES_JSON" \
-    --arg model "$(jq -r '.model // "Gemini 4 Argon High"' "$FALLBACK_FILE")" \
+    --arg model "$(jq -r '.model // "Gemini 4 Carbon High"' "$FALLBACK_FILE")" \
     '
       .status = $status |
       .reviewer = "antigravity:fallback" |
@@ -335,7 +335,7 @@ rm -f "$PROMPT_FILE"
 # All External Pools Exhausted -> SKIPPED_RATE_LIMIT
 if [ -z "$REVIEWER_USED" ]; then
   echo "⛔ All external review pools (Codex, Claude, DeepSeek) are unavailable or rate-limited."
-  echo "➡️  Unlocking last-resort internal fallback (Pool A: Gemini 4 Argon High subagent)."
+  echo "➡️  Unlocking last-resort internal fallback (Pool A: Gemini 4 Carbon High subagent)."
 
   STATE_PAYLOAD=$(jq -n -c \
     --arg status "SKIPPED_RATE_LIMIT" \

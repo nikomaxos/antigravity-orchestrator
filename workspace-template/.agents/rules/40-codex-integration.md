@@ -5,11 +5,11 @@ Three external frontier CLIs are wired alongside Antigravity across **4 orthogon
 
 | Role / Stage | Primary Pool | Automatic Failover Cascade | Script |
 |--------------|-------------|----------------------------|--------|
-| **External-First Task & Patch Orchestrator (`T1`–`T4`)** | `--tier ui`: **Pool C** (`Claude Sonnet 4.6`)<br>`--tier backend`: **Pool B** (`Codex gpt-6-astra high`)<br>`--tier deep`: **Pool B** (`Codex gpt-6-astra xhigh`)<br>`--tier flash`: **Pool D** (`DeepSeek-Flash`) | `--tier ui`: Pool B (`terra med`) → Pool D (`DeepSeek-V4-Pro`) → Exit `2` (Pool A `Argon Med`)<br>`--tier backend`: Pool C (`Sonnet 4.6`) → Pool D (`DeepSeek-V4-Pro`) → Exit `2` (Pool A `Argon Med`)<br>`--tier deep`: Pool C (`Opus 4.6 high`) → Pool D (`DeepSeek-V4-Pro`) → Exit `2` (Pool A `Argon High`) | `bash .agents/scripts/frontier-orchestrate.sh --tier <ui\|backend\|deep\|flash>` |
+| **External-First Task & Patch Orchestrator (`T1`–`T4`)** | `--tier ui`: **Pool C** (`Claude Sonnet 4.6`)<br>`--tier backend`: **Pool B** (`Codex gpt-6-astra high`)<br>`--tier deep`: **Pool B** (`Codex gpt-6-astra xhigh`)<br>`--tier flash`: **Pool D** (`DeepSeek-Flash`) | `--tier ui`: Pool B (`terra med`) → Pool D (`DeepSeek-V4-Pro`) → Exit `2` (Pool A `Carbon Med`)<br>`--tier backend`: Pool C (`Sonnet 4.6`) → Pool D (`DeepSeek-V4-Pro`) → Exit `2` (Pool A `Carbon Med`)<br>`--tier deep`: Pool C (`Opus 4.6 high`) → Pool D (`DeepSeek-V4-Pro`) → Exit `2` (Pool A `Carbon High`) | `bash .agents/scripts/frontier-orchestrate.sh --tier <ui\|backend\|deep\|flash>` |
 | **Stage-0 Cheap Pre-Check** (before Staging/Gate) | **Pool D**: OpenCode (`deepseek/deepseek-v4-pro` or `deepseek-v4.1-flash-free`) | Advisory skip if offline | `bash .agents/scripts/stage0-precheck.sh` |
-| **Deep Root-Cause Analysis (RCA)** | **Pool B**: Codex (`gpt-6-astra`, `xhigh`) | **Pool C**: Claude (`opus` → `sonnet`, `high`) → **Pool D**: OpenCode (`deepseek-v4-pro`) → Exit `2` (**Pool A** `Gemini 4 Argon High`) | `bash .agents/scripts/codex-rca.sh "<symptom>" [-a <log>]...` |
+| **Deep Root-Cause Analysis (RCA)** | **Pool B**: Codex (`gpt-6-astra`, `xhigh`) | **Pool C**: Claude (`opus` → `sonnet`, `high`) → **Pool D**: OpenCode (`deepseek-v4-pro`) → Exit `2` (**Pool A** `Gemini 4 Carbon High`) | `bash .agents/scripts/codex-rca.sh "<symptom>" [-a <log>]...` |
 | **Tiered Pre-Commit Code + OWASP Gate** (`R1` / `R2` / `R3`) | **Pool B**: Codex (`R1`: `gpt-5.6-terra med`; `R2`: `gpt-6-astra med`; `R3`: `gpt-6-astra high`) + **Round-2+ Delta Resume** (`codex exec resume`) | **Pool C**: Claude (`R1`: `sonnet low`; `R2`: `sonnet high`; `R3`: `opus`/`sonnet high`) → **Pool D**: OpenCode (`deepseek-v4-pro`) → Exit `2` (**Pool A** `--fallback`) | `bash .agents/scripts/run-codex-review-gate.sh` |
-| **Post-Commit Security & Dependabot Sync** | Deterministic OWASP binding from `codex-review.json` + `gh api` Dependabot check (`R1`/`R2`) | Exit `2` on `R3` security-sensitive paths → dedicated `Gemini 4 Argon High` / `Claude Opus High` Security Reviewer | `bash .agents/scripts/sync-security-from-review.sh` |
+| **Post-Commit Security & Dependabot Sync** | Deterministic OWASP binding from `codex-review.json` + `gh api` Dependabot check (`R1`/`R2`) | Exit `2` on `R3` security-sensitive paths → dedicated `Gemini 4 Carbon High` / `Claude Opus High` Security Reviewer | `bash .agents/scripts/sync-security-from-review.sh` |
 
 ## Automatic Diff Risk Tiering (`codex_classify_diff_tier`)
 
@@ -30,7 +30,7 @@ Three external frontier CLIs are wired alongside Antigravity across **4 orthogon
 5. **Commit Gate Order.**
    `git add <explicit paths>` → `bash .agents/scripts/run-codex-review-gate.sh` → `git add .agent-state/codex-review.json` (plus other gate files) → `git commit` → `bash .agents/scripts/sync-security-from-review.sh`.
 6. **Last-Resort Internal Fallback (`exit 2`).** Unlocked **ONLY** when all 3 external pools (`Codex`, `Claude`, `DeepSeek`) return `RATE_LIMITED` or `UNAVAILABLE`:
-   - Spawn an internal subagent on **Gemini 4 Argon** (`High` thinking level), explicitly announcing the model and thinking level in Greek to the user.
+   - Spawn an internal subagent on **Gemini 4 Carbon** (`High` thinking level), explicitly announcing the model and thinking level in Greek to the user.
    - Have it review `git diff --cached` against `.agents/scripts/codex-review-schema.json`, save to `.agent-reports/codex/fallback-review.json`, and run `bash .agents/scripts/run-codex-review-gate.sh --fallback .agent-reports/codex/fallback-review.json`.
 7. **Credentials Setup.**
    - Pool B (Codex): `codex login` (ChatGPT subscription).

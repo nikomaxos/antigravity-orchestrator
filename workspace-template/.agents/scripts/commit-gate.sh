@@ -137,7 +137,7 @@ if echo "$COMMAND_LINE" | grep -iqE 'git[[:space:]]+commit'; then
         if [ "$CR_FP" != "$(codex_staged_fingerprint)" ]; then
           FAILED_CHECKS="${FAILED_CHECKS}Cross-Model review is STALE (staged diff changed after review — re-run run-codex-review-gate.sh); "
         elif [ "$CR_STATUS" = "SKIPPED_RATE_LIMIT" ] || [ "$CR_STATUS" = "UNAVAILABLE" ]; then
-          FAILED_CHECKS="${FAILED_CHECKS}External CLI cascade ${CR_STATUS} — complete the internal Argon High fallback review (run-codex-review-gate.sh --fallback); "
+          FAILED_CHECKS="${FAILED_CHECKS}External CLI cascade ${CR_STATUS} — complete the internal Carbon High fallback review (run-codex-review-gate.sh --fallback); "
         elif [ "$CR_STATUS" != "PASS" ] && [ "$CR_STATUS" != "PASS_FALLBACK" ]; then
           FAILED_CHECKS="${FAILED_CHECKS}Cross-Model review status is ${CR_STATUS} ($(jq -r '.blocking_count // "?"' "$CR_FILE") CRITICAL/HIGH/OWASP unresolved); "
         fi

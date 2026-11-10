@@ -4,7 +4,7 @@
 # =============================================================================
 # Unified CLI dispatcher that routes heavy reasoning, architecture, RCA, and
 # surgical read-only patch design to External Frontier Pools (B/C/D) FIRST,
-# preserving Pool A (`Gemini 4 Argon`) quota for orchestration & final fallback.
+# preserving Pool A (`Gemini 4 Carbon`) quota for orchestration & final fallback.
 #
 # Tier Cascades:
 #   --tier ui      (T2 Frontend/UI/Tests):
@@ -18,7 +18,7 @@
 #
 # Exit Codes:
 #   0 — External frontier pool succeeded (response printed to stdout & saved to .agent-reports/codex/frontier-latest.md)
-#   2 — All external frontier pools (B/C/D) are exhausted/unavailable; caller MUST fall back to Pool A (Gemini 4 Argon Medium/High)
+#   2 — All external frontier pools (B/C/D) are exhausted/unavailable; caller MUST fall back to Pool A (Gemini 4 Carbon Medium/High)
 #   1 — Invalid arguments or usage error
 # =============================================================================
 set -euo pipefail
@@ -52,7 +52,7 @@ Options:
 
 Exit Codes:
   0  Success (frontier output written to stdout and .agent-reports/codex/frontier-latest.md)
-  2  All external pools (B/C/D) exhausted/rate-limited -> Fall back to Pool A (Gemini 4 Argon Medium/High)
+  2  All external pools (B/C/D) exhausted/rate-limited -> Fall back to Pool A (Gemini 4 Carbon Medium/High)
   1  Usage / argument error
 EOF
 }
@@ -281,5 +281,5 @@ if [ "$SUCCEEDED" -eq 1 ] && [ -s "$OUT_FILE" ]; then
 fi
 
 echo "⛔ [Frontier Orchestrator] All external frontier pools (B/C/D) for --tier ${TIER} are exhausted or unavailable." >&2
-echo "➡️  Caller MUST fall back to Pool A (Antigravity Gemini 4 Argon Medium/High)." >&2
+echo "➡️  Caller MUST fall back to Pool A (Antigravity Gemini 4 Carbon Medium/High)." >&2
 exit 2

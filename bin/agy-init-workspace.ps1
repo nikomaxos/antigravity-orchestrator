@@ -164,7 +164,7 @@ This repository houses the Home Assistant (Oraiokastro) integration and Antigrav
 ---
 
 ## 2. Pure Zero-Hands-On Orchestrator & 4-Pool Model Routing
-1. **Universal Parent Orchestrator (Default: `Gemini 4 Argon Medium`)**: Operates strictly as a **Pure Dispatcher / Orchestrator** (0 hands-on file reads/edits/builds in parent context, maintaining parent turns at <35K tokens with ~1s latency).
+1. **Universal Parent Orchestrator (Default: `Gemini 4 Carbon Medium`)**: Operates strictly as a **Pure Dispatcher / Orchestrator** (0 hands-on file reads/edits/builds in parent context, maintaining parent turns at <35K tokens with ~1s latency).
 2. **External-First Frontier Offload (`frontier-orchestrate.sh`)**:
    - `T1` Fast Explorer (`Model: "flash"` — `Gemini 3.8 Flash`, `Flash I/O` thinking): Codebase exploration, log slicing, read-only queries.
    - `T2` UI / Frontend / Tests (`frontier-orchestrate.sh --tier ui`: Claude Sonnet 4.6 -> Codex gpt-5.6-terra med -> DeepSeek-V4-Pro).

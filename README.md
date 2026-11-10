@@ -10,7 +10,7 @@
 
 | Pool | Πάροχος & Billing | Ρόλος & Μοντέλα | Πλεονεκτήματα |
 |------|-------------------|-----------------|---------------|
-| **Pool A** | **Antigravity Native** (Subscription) | **Single Writer**: Pure Parent Dispatcher (`Gemini 4 Argon Medium`), `T1` Explorer (`Gemini 3.8 Flash`), `T4` Subagent (`Argon High`) | 0 direct tool clutter στον γονέα (<35K tokens context, ~1s latency) |
+| **Pool A** | **Antigravity Native** (Subscription) | **Single Writer**: Pure Parent Dispatcher (`Gemini 4 Carbon Medium`), `T1` Explorer (`Gemini 3.8 Flash`), `T4` Subagent (`Carbon High`) | 0 direct tool clutter στον γονέα (<35K tokens context, ~1s latency) |
 | **Pool A+** | **Antigravity Plus Claude Credits** | Claude Sonnet / Opus ενεργοποιημένα στο UI Dropdown | Αυτόματη μεταγωγή coding subagents σε native Claude |
 | **Pool B** | **OpenAI Codex CLI** (ChatGPT Plus) | Read-only Patch & RCA Architect (`gpt-6-astra high/xhigh`, `gpt-5.6-terra med`) | Stateful delta review (`codex exec resume`), deep RCA (`codex-rca.sh`) |
 | **Pool C** | **Anthropic Claude Code CLI** (Claude Pro) | Read-only Patch Architect (`claude -p --permission-mode plan`, `sonnet`, `opus`) | Surgical UI/Frontend design, auto-failover όταν το Codex εξαντληθεί |
@@ -21,7 +21,7 @@
 - **`T1` Fast Explorer (`Model: "flash"` — `Gemini 3.8 Flash`)**: Έρευνα αρχείων, ανάγνωση logs, read-only SQL/API ερωτήματα, docs synthesis.
 - **`T2` UI / Frontend / Tests (`frontier-orchestrate.sh --tier ui`)**: `Claude Sonnet 4.6` → `Codex gpt-5.6-terra med` → `DeepSeek-V4-Pro`.
 - **`T3` Backend / Migrations (`frontier-orchestrate.sh --tier backend`)**: `Codex gpt-6-astra high` → `Claude Sonnet 4.6` → `DeepSeek-V4-Pro`.
-- **`T4` Critical Concurrency / Security / RCA (`frontier-orchestrate.sh --tier deep` / `codex-rca.sh`)**: `Codex gpt-6-astra xhigh` → `Claude Opus 4.6 high` → `DeepSeek-V4-Pro` → Exit `2` (Pool A `Argon High`).
+- **`T4` Critical Concurrency / Security / RCA (`frontier-orchestrate.sh --tier deep` / `codex-rca.sh`)**: `Codex gpt-6-astra xhigh` → `Claude Opus 4.6 high` → `DeepSeek-V4-Pro` → Exit `2` (Pool A `Carbon High`).
 - **Release & Gatekeeper**: Αυτόματη εκτέλεση και υπογραφή όλων των gates.
 
 ---
