@@ -33,3 +33,14 @@ This repository is protected by the Antigravity Multi-Model Orchestrator and Gat
 ## 📝 Recent Outcomes
 <!-- Chronological record of completed architectural changes, features, and fixes -->
 - Initialized workspace with Antigravity 4-Pool Multi-Model Orchestrator & agy-gatekeeper enforcement.
+
+### 🚨 ΚΑΝΟΝΑΣ ΕΚΤΑΚΤΗΣ ΕΦΕΔΡΕΙΑΣ QUOTA (`< 10%` Gemini Weekly/Monthly Limit — Zero-Gemini Pass-Through Mode)
+- **Συνθήκη Ενεργοποίησης (`gemini-quota-mode.sh --set-reserve <pct>`)**: Όταν το weekly/monthly limit πέφτει **κάτω από `10%` σε όλα τα μοντέλα Gemini** (ελέγχεται μέσω `~/.gemini/config/gemini-quota.json` και εμφανίζεται στο preflight ως `🚨 GEMINI_QUOTA=<10%`), ενεργοποιείται αυτόματα το **Zero-Gemini Pass-Through Reserve Mode**.
+- **Καθολική Αντικατάσταση ΟΛΩΝ των Gemini Μοντέλων (συμπεριλαμβανομένου του `Gemini 3.8 Flash`)**:
+  - **ΑΠΑΓΟΡΕΥΕΤΑΙ** η κλήση `invoke_subagent` (ακόμη και με `Model: "flash"` / `Gemini 3.8 Flash`), ώστε να μην καταναλώνεται καθόλου Gemini quota σε subagent loops.
+  - Ο Parent Agent λειτουργεί **αποκλειστικά ως 1-step Pass-Through Router** (κρατώντας τα τελευταία `< 10%` Gemini credits αποκλειστικά και μόνο για να παραλαμβάνει τις εντολές του χρήστη στο UI και να τις προωθεί ακαριαία χωρίς κανένα processing από Gemini):
+    - **`T1` (Αντικατάσταση `Gemini 3.8 Flash`)**: `bash .agents/scripts/frontier-orchestrate.sh --tier flash` $ightarrow$ **Pool D (`deepseek/deepseek-v4-pro` / `deepseek-flash`)** $ightarrow$ **Pool C (`Claude Sonnet 4.6 low`)** $ightarrow$ **Pool B (`Codex gpt-5.6-terra`)**.
+    - **`T2` (Αντικατάσταση `Gemini 4 Carbon Medium` & `3.8 Flash` UI/CRUD)**: `bash .agents/scripts/frontier-orchestrate.sh --tier ui` $ightarrow$ **Pool C (`Claude Sonnet 4.6`)** $ightarrow$ **Pool B (`Codex gpt-5.6-terra medium`)** $ightarrow$ **Pool D (`DeepSeek-V4-Pro`)**.
+    - **`T3` (Αντικατάσταση `Gemini 4 Carbon Medium` Backend/Integration)**: `bash .agents/scripts/frontier-orchestrate.sh --tier backend` $ightarrow$ **Pool B (`Codex gpt-6-astra high`)** $ightarrow$ **Pool C (`Claude Sonnet 4.6`)** $ightarrow$ **Pool D (`DeepSeek-V4-Pro`)**.
+    - **`T4` (Αντικατάσταση `Gemini 4 Carbon High` Deep/Concurrency/Security)**: `bash .agents/scripts/frontier-orchestrate.sh --tier deep` $ightarrow$ **Pool B (`Codex gpt-6-astra xhigh`)** $ightarrow$ **Pool C (`Claude Opus 4.6 high`)** $ightarrow$ **Pool D (`DeepSeek-V4-Pro`)**.
+  - Επαναφορά σε κανονική λειτουργία όταν ανανεωθούν τα limits (`>= 10%`): `bash .agents/scripts/gemini-quota-mode.sh --set-normal 100`.

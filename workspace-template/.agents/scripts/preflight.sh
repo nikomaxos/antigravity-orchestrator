@@ -87,5 +87,14 @@ if [ -f "$CODEX_LIB" ]; then
   ) || CODEX_MSG=""
 fi
 
-MSG="🔒 Active Gates: QA=${QA_STATUS}, Regression=${REG_STATUS}, Vault=${VAULT_STATUS}, Docs=${DOCS_STATUS}, Skills=${SKILLS_STATUS}, Security=${SECURITY_STATUS}${CODEX_MSG}"
+# --- Gemini <10% Quota Reserve Mode Check ---
+QUOTA_FILE="$HOME/.gemini/config/gemini-quota.json"
+GEMINI_RESERVE_BANNER=""
+if [ -f "$QUOTA_FILE" ] && jq -e '.reserve_passthrough_mode == true' "$QUOTA_FILE" >/dev/null 2>&1; then
+  REM_PCT=$(jq -r '.gemini_remaining_pct // "<10"' "$QUOTA_FILE" 2>/dev/null || echo "<10")
+  GEMINI_RESERVE_BANNER=" | 🚨 GEMINI_QUOTA=${REM_PCT}% (<10% PASS-THROUGH RESERVE: NO GEMINI/3.8-FLASH SUBAGENTS -> 100% POOLS B/C/D)"
+fi
+
+MSG="🔒 Active Gates: QA=${QA_STATUS}, Regression=${REG_STATUS}, Vault=${VAULT_STATUS}, Docs=${DOCS_STATUS}, Skills=${SKILLS_STATUS}, Security=${SECURITY_STATUS}${CODEX_MSG}${GEMINI_RESERVE_BANNER}"
 jq -n -c --arg m "$MSG" '{injectSteps: [{ephemeralMessage: $m}]}'
+

@@ -263,7 +263,7 @@ case "$TIER" in
       SUCCEEDED=1
     fi
     ;;
-  flash)
+  flash|t1)
     if try_pool_d_deepseek "$OPENCODE_FLASH_MODEL" 0 "DeepSeek-Flash"; then
       SUCCEEDED=1
     elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
