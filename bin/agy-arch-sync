@@ -6,14 +6,32 @@
 # global skills, and registered workspace scripts across machines.
 #
 # Usage:
-#   agy-arch-sync [--quiet]
+#   agy-arch-sync [--quiet] [--workspace <path>]
 # =============================================================================
 set -euo pipefail
 
 QUIET=0
-for arg in "$@"; do
-  case "$arg" in
-    -q|--quiet|quiet) QUIET=1 ;;
+REGISTER_WS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -q|--quiet|quiet)
+      QUIET=1
+      shift
+      ;;
+    -w|--workspace)
+      REGISTER_WS="${2:-}"
+      shift 2
+      ;;
+    -w=*|--workspace=*)
+      REGISTER_WS="${1#*=}"
+      shift
+      ;;
+    *)
+      if [ -d "$1" ]; then
+        REGISTER_WS="$1"
+      fi
+      shift
+      ;;
   esac
 done
 
@@ -26,6 +44,7 @@ log() {
 USER_HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
 CONFIG_DIR="${USER_HOME}/.gemini/config"
 REPO_DIR="${USER_HOME}/Development/antigravity-orchestrator"
+[ ! -d "$REPO_DIR" ] && REPO_DIR="${USER_HOME}/.local/share/antigravity-orchestrator"
 STAMP_FILE="${CONFIG_DIR}/.last-orchestrator-sync"
 WS_REGISTRY="${CONFIG_DIR}/orchestrator-workspaces.json"
 
@@ -51,6 +70,22 @@ else
   log "ℹ️  No remote 'origin' configured for ${REPO_DIR}. Skipping pull."
 fi
 
+# 0. Register workspace if requested
+if [ -n "$REGISTER_WS" ] && [ -d "$REGISTER_WS" ]; then
+  CANONICAL_WS=$(cd "$REGISTER_WS" && pwd)
+  if [ -d "${CANONICAL_WS}/.agents" ] || [ -d "${CANONICAL_WS}/.git" ]; then
+    if [ -f "$WS_REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+      if ! jq -e --arg ws "$CANONICAL_WS" 'index($ws)' "$WS_REGISTRY" >/dev/null 2>&1; then
+        jq --arg ws "$CANONICAL_WS" '. += [$ws] | unique' "$WS_REGISTRY" > "${WS_REGISTRY}.tmp" && mv -f "${WS_REGISTRY}.tmp" "$WS_REGISTRY"
+        log "   -> Registered workspace: ${CANONICAL_WS}"
+      fi
+    else
+      echo "[\"${CANONICAL_WS}\"]" > "$WS_REGISTRY"
+      log "   -> Initialized registry with workspace: ${CANONICAL_WS}"
+    fi
+  fi
+fi
+
 # 1. Sync global rules & routing
 log "📦 Syncing global configs & skills into ${CONFIG_DIR}..."
 if [ -f "${REPO_DIR}/global/gemini/config/model-routing.json" ]; then
@@ -64,15 +99,23 @@ if [ -f "${REPO_DIR}/global/gemini/config/GEMINI.md" ]; then
   cp -f "${REPO_DIR}/global/gemini/config/GEMINI.md" "${USER_HOME}/.gemini/GEMINI.md" 2>/dev/null || true
 fi
 
-# Sync global skills
+# Sync global skills dynamically
 mkdir -p "${CONFIG_DIR}/skills"
-for skill in claude codex opencode multi-model-delegation codex-review; do
-  if [ -d "${REPO_DIR}/global/gemini/config/skills/${skill}" ]; then
+for skill_dir in "${REPO_DIR}/global/gemini/config/skills"/*; do
+  if [ -d "$skill_dir" ]; then
+    skill=$(basename "$skill_dir")
     mkdir -p "${CONFIG_DIR}/skills/${skill}"
-    cp -r "${REPO_DIR}/global/gemini/config/skills/${skill}/"* "${CONFIG_DIR}/skills/${skill}/" 2>/dev/null || true
+    cp -r "${skill_dir}/"* "${CONFIG_DIR}/skills/${skill}/" 2>/dev/null || true
     chmod +x "${CONFIG_DIR}/skills/${skill}"/scripts/*.sh 2>/dev/null || true
   fi
 done
+
+# Sync global workflows (both workflows and legacy global_workflows)
+if [ -d "${REPO_DIR}/global/gemini/config/workflows" ]; then
+  mkdir -p "${CONFIG_DIR}/workflows" "${CONFIG_DIR}/global_workflows"
+  cp -r "${REPO_DIR}/global/gemini/config/workflows/"* "${CONFIG_DIR}/workflows/" 2>/dev/null || true
+  cp -r "${REPO_DIR}/global/gemini/config/workflows/"* "${CONFIG_DIR}/global_workflows/" 2>/dev/null || true
+fi
 
 # 2. Sync registered workspaces
 SYNC_SCRIPTS=(
@@ -107,6 +150,24 @@ if [ -f "$WS_REGISTRY" ] && command -v jq >/dev/null 2>&1; then
           chmod +x "${ws}/.agents/scripts/${s}" 2>/dev/null || true
         fi
       done
+
+      # Sync workspace skills if available
+      if [ -d "${REPO_DIR}/workspace-template/.agents/skills" ]; then
+        mkdir -p "${ws}/.agents/skills"
+        for wsk in "${REPO_DIR}/workspace-template/.agents/skills"/*; do
+          if [ -d "$wsk" ]; then
+            sk_name=$(basename "$wsk")
+            mkdir -p "${ws}/.agents/skills/${sk_name}"
+            cp -r "${wsk}/"* "${ws}/.agents/skills/${sk_name}/" 2>/dev/null || true
+          fi
+        done
+      fi
+
+      # Sync workspace workflows if available
+      if [ -d "${REPO_DIR}/workspace-template/.agents/workflows" ]; then
+        mkdir -p "${ws}/.agents/workflows"
+        cp -r "${REPO_DIR}/workspace-template/.agents/workflows/"* "${ws}/.agents/workflows/" 2>/dev/null || true
+      fi
     fi
   done <<< "$WORKSPACES"
 fi

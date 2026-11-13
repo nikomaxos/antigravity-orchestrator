@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Antigravity Architecture Sync CLI (`architecture-sync`)
+# =============================================================================
+# Detects OS, pulls latest changes from GitHub, updates model-routing.json,
+# syncs global and workspace scripts/skills, and checks gatekeeper health.
+# =============================================================================
+set -euo pipefail
+
+# 1. Detect Operating System
+OS_TYPE="$(uname -s 2>/dev/null || echo "Unknown")"
+ARCH_TYPE="$(uname -m 2>/dev/null || echo "")"
+
+USER_HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+CONFIG_DIR="${USER_HOME}/.gemini/config"
+REPO_DIR="${USER_HOME}/Development/antigravity-orchestrator"
+[ ! -d "$REPO_DIR" ] && REPO_DIR="${USER_HOME}/.local/share/antigravity-orchestrator"
+
+CURRENT_WS="${1:-$PWD}"
+
+echo "=========================================================="
+echo "  Antigravity Architecture Synchronization"
+echo "  OS: ${OS_TYPE} (${ARCH_TYPE})"
+echo "=========================================================="
+
+if [ ! -d "$REPO_DIR" ]; then
+  echo "ℹ️  Cloning repository into ${REPO_DIR}..."
+  mkdir -p "$(dirname "$REPO_DIR")"
+  git clone https://github.com/nikomaxos/antigravity-orchestrator.git "$REPO_DIR"
+fi
+
+OLD_SHA=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+# Pull latest origin/main
+if git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1; then
+  echo "🔄 Pulling latest updates from origin/main..."
+  git -C "$REPO_DIR" pull --ff-only 2>/dev/null || {
+    git -C "$REPO_DIR" fetch origin main 2>/dev/null || true
+    git -C "$REPO_DIR" merge --ff-only origin/main 2>/dev/null || echo "⚠️ Fast-forward not possible, using local HEAD."
+  }
+fi
+
+NEW_SHA=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo "$OLD_SHA")
+
+# Run agy-arch-sync
+if [ -x "${REPO_DIR}/bin/agy-arch-sync" ]; then
+  bash "${REPO_DIR}/bin/agy-arch-sync" --workspace "$CURRENT_WS"
+elif [ -x "${USER_HOME}/.local/bin/agy-arch-sync" ]; then
+  bash "${USER_HOME}/.local/bin/agy-arch-sync" --workspace "$CURRENT_WS"
+fi
+
+# Gatekeeper Health
+GK_STATUS="Offline"
+if curl -s -m 2 http://127.0.0.1:18099/api/gatekeeper/health >/dev/null 2>&1; then
+  GK_STATUS="Healthy / Active (127.0.0.1:18099)"
+fi
+
+# Model Routing Info
+ROUTING_INFO="Unknown"
+if [ -f "${CONFIG_DIR}/model-routing.json" ] && command -v jq >/dev/null 2>&1; then
+  S_VER=$(jq -r '.schema_version // "unknown"' "${CONFIG_DIR}/model-routing.json" 2>/dev/null || echo "unknown")
+  U_AT=$(jq -r '.updated_at // "unknown"' "${CONFIG_DIR}/model-routing.json" 2>/dev/null || echo "unknown")
+  ROUTING_INFO="${S_VER} (${U_AT})"
+fi
+
+TRANSITION="${OLD_SHA} -> ${NEW_SHA}"
+if [ "$OLD_SHA" = "$NEW_SHA" ]; then
+  TRANSITION="Already up-to-date (${NEW_SHA})"
+fi
+
+echo ""
+echo "----------------------------------------------------------"
+echo "  Sync Results / Αποτελέσματα Συγχρονισμού"
+echo "----------------------------------------------------------"
+echo "  🖥️  OS:              ${OS_TYPE} (${ARCH_TYPE})"
+echo "  🔄 Git Version:     ${TRANSITION}"
+echo "  🎛️  Model Routing:   ${ROUTING_INFO}"
+echo "  📁 Workspace:       ${CURRENT_WS}"
+echo "  🛡️  Gatekeeper:      ${GK_STATUS}"
+echo "  ⏱️  Timestamp:       $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "----------------------------------------------------------"
+echo "✅ Architecture sync complete."

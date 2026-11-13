@@ -58,16 +58,26 @@ if [ -f "${SCRIPT_DIR}/scripts/configure-antigravity-turbo.sh" ]; then
   bash "${SCRIPT_DIR}/scripts/configure-antigravity-turbo.sh"
 fi
 
-# 2. Global Skills
+# 2. Global Skills & Workflows
 echo ""
-echo "🧠 2. Installing global skills into ~/.gemini/config/skills/..."
+echo "🧠 2. Installing global skills & workflows into ~/.gemini/config/..."
 mkdir -p "${HOME}/.gemini/config/skills"
-for skill in claude codex opencode multi-model-delegation codex-review; do
-  mkdir -p "${HOME}/.gemini/config/skills/${skill}"
-  cp -r "${SCRIPT_DIR}/global/gemini/config/skills/${skill}/"* "${HOME}/.gemini/config/skills/${skill}/"
-  chmod +x "${HOME}/.gemini/config/skills/${skill}"/scripts/*.sh 2>/dev/null || true
-  echo "   ✓ Installed skill: ${skill}"
+for skill_dir in "${SCRIPT_DIR}/global/gemini/config/skills"/*; do
+  if [ -d "$skill_dir" ]; then
+    skill=$(basename "$skill_dir")
+    mkdir -p "${HOME}/.gemini/config/skills/${skill}"
+    cp -r "${skill_dir}/"* "${HOME}/.gemini/config/skills/${skill}/"
+    chmod +x "${HOME}/.gemini/config/skills/${skill}"/scripts/*.sh 2>/dev/null || true
+    echo "   ✓ Installed skill: ${skill}"
+  fi
 done
+
+if [ -d "${SCRIPT_DIR}/global/gemini/config/workflows" ]; then
+  mkdir -p "${HOME}/.gemini/config/workflows" "${HOME}/.gemini/config/global_workflows"
+  cp -r "${SCRIPT_DIR}/global/gemini/config/workflows/"* "${HOME}/.gemini/config/workflows/"
+  cp -r "${SCRIPT_DIR}/global/gemini/config/workflows/"* "${HOME}/.gemini/config/global_workflows/"
+  echo "   ✓ Installed global workflows"
+fi
 
 # 3. Global OpenCode Configuration
 echo ""
@@ -91,10 +101,14 @@ cp -f "${SCRIPT_DIR}/bin/agy-arch-sync.ps1" "${HOME}/.local/bin/agy-arch-sync.ps
 cp -f "${SCRIPT_DIR}/bin/frontier-orchestrate" "${HOME}/.local/bin/frontier-orchestrate"
 cp -f "${SCRIPT_DIR}/bin/frontier-orchestrate.ps1" "${HOME}/.local/bin/frontier-orchestrate.ps1" 2>/dev/null || true
 cp -f "${SCRIPT_DIR}/bin/agy-setup-clis" "${HOME}/.local/bin/agy-setup-clis"
+cp -f "${SCRIPT_DIR}/bin/architecture-sync" "${HOME}/.local/bin/architecture-sync"
+cp -f "${SCRIPT_DIR}/bin/architecture-sync.ps1" "${HOME}/.local/bin/architecture-sync.ps1" 2>/dev/null || true
+cp -f "${SCRIPT_DIR}/bin/architecture-sync.cmd" "${HOME}/.local/bin/architecture-sync.cmd" 2>/dev/null || true
 chmod +x "${HOME}/.local/bin/agy-init-workspace" \
          "${HOME}/.local/bin/agy-arch-sync" \
          "${HOME}/.local/bin/frontier-orchestrate" \
-         "${HOME}/.local/bin/agy-setup-clis"
+         "${HOME}/.local/bin/agy-setup-clis" \
+         "${HOME}/.local/bin/architecture-sync"
 echo "   ✓ ~/.local/bin/agy-init-workspace"
 echo "   ✓ ~/.local/bin/agy-init-workspace.ps1"
 echo "   ✓ ~/.local/bin/agy-arch-sync"
@@ -102,6 +116,8 @@ echo "   ✓ ~/.local/bin/agy-arch-sync.ps1"
 echo "   ✓ ~/.local/bin/frontier-orchestrate"
 echo "   ✓ ~/.local/bin/frontier-orchestrate.ps1"
 echo "   ✓ ~/.local/bin/agy-setup-clis"
+echo "   ✓ ~/.local/bin/architecture-sync"
+echo "   ✓ ~/.local/bin/architecture-sync.ps1"
 
 # Ensure PATH in shell startup
 for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do

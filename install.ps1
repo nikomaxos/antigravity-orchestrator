@@ -60,21 +60,32 @@ Write-Host "   ✓ $userHome\.gemini\config\GEMINI.md" -ForegroundColor Green
 Write-Host "   ✓ $userHome\.gemini\GEMINI.md" -ForegroundColor Green
 
 # -----------------------------------------------------------------------------
-# 2. Global Skills
+# 2. Global Skills & Workflows
 # -----------------------------------------------------------------------------
-Write-Host "`n🧠 2. Installing global skills into $userHome\.gemini\config\skills\..." -ForegroundColor Cyan
+Write-Host "`n🧠 2. Installing global skills & workflows into $userHome\.gemini\config\..." -ForegroundColor Cyan
 $skillsBaseDir = Join-Path $geminiConfigDir "skills"
 New-Item -ItemType Directory -Path $skillsBaseDir -Force | Out-Null
 
-$skills = @("claude", "codex", "opencode", "multi-model-delegation", "codex-review")
-foreach ($s in $skills) {
-    $srcSkill = Join-Path $scriptDir "global\gemini\config\skills\$s"
-    $destSkill = Join-Path $skillsBaseDir $s
-    if (Test-Path $srcSkill) {
+$srcSkillsDir = Join-Path $scriptDir "global\gemini\config\skills"
+if (Test-Path $srcSkillsDir) {
+    Get-ChildItem -Path $srcSkillsDir -Directory | ForEach-Object {
+        $sName = $_.Name
+        $destSkill = Join-Path $skillsBaseDir $sName
         New-Item -ItemType Directory -Path $destSkill -Force | Out-Null
-        Copy-Item -Path "$srcSkill\*" -Destination $destSkill -Recurse -Force
-        Write-Host "   ✓ Installed skill: $s" -ForegroundColor Green
+        Copy-Item -Path "$($_.FullName)\*" -Destination $destSkill -Recurse -Force
+        Write-Host "   ✓ Installed skill: $sName" -ForegroundColor Green
     }
+}
+
+$srcWorkflowsDir = Join-Path $scriptDir "global\gemini\config\workflows"
+if (Test-Path $srcWorkflowsDir) {
+    $destWf = Join-Path $geminiConfigDir "workflows"
+    $destGWf = Join-Path $geminiConfigDir "global_workflows"
+    New-Item -ItemType Directory -Path $destWf -Force | Out-Null
+    New-Item -ItemType Directory -Path $destGWf -Force | Out-Null
+    Copy-Item -Path "$srcWorkflowsDir\*" -Destination $destWf -Recurse -Force
+    Copy-Item -Path "$srcWorkflowsDir\*" -Destination $destGWf -Recurse -Force
+    Write-Host "   ✓ Installed global workflows" -ForegroundColor Green
 }
 
 # -----------------------------------------------------------------------------

@@ -187,6 +187,30 @@ agy-arch-sync
 
 ---
 
+## ⚡ Χειροκίνητος Συγχρονισμός μέσω Slash Command (`/architecture-sync`)
+
+Όποτε επιθυμείτε άμεσο χειροκίνητο συγχρονισμό χωρίς αναμονή του 30-λεπτου scheduler:
+1. **Μέσω Antigravity UI**: Πληκτρολογήστε απλά **`/architecture-sync`** στο chat box.
+2. **Μέσω Terminal (Linux / Git Bash)**:
+   ```bash
+   architecture-sync
+   ```
+3. **Μέσω Terminal (Windows PowerShell / CMD)**:
+   ```powershell
+   architecture-sync.ps1
+   # ή από CMD: architecture-sync.cmd
+   ```
+
+Το `/architecture-sync`:
+- Εντοπίζει **αυτόματα** το λειτουργικό σύστημα (`Linux` vs `Windows`).
+- Εκτελεί ασφαλές `git pull --ff-only origin main` στο τοπικό αποθετήριο `antigravity-orchestrator`.
+- Ενημερώνει άμεσα το παγκόσμιο `model-routing.json`, κανόνες και skills στο `%USERPROFILE%/.gemini/config` ή `~/.gemini/config`.
+- Καταχωρεί και συγχρονίζει το ενεργό workspace στο `orchestrator-workspaces.json`.
+- Ελέγχει την κατάσταση του Gatekeeper Daemon (`127.0.0.1:18099`).
+- Επιστρέφει πλήρη αναφορά στα Ελληνικά με τη μετάβαση εκδόσεων Git και την έκδοση του μητρώου μοντέλων.
+
+---
+
 ## 📁 Δομή Αποθετηρίου
 
 ```text
@@ -195,6 +219,9 @@ antigravity-orchestrator/
 ├── install.sh                         # Κεντρικός εγκαταστάτης (Linux / Git Bash)
 ├── install.ps1                        # Κεντρικός εγκαταστάτης (Windows PowerShell)
 ├── bin/
+│   ├── architecture-sync              # Χειροκίνητο CLI sync (Bash)
+│   ├── architecture-sync.ps1          # Χειροκίνητο CLI sync (PowerShell)
+│   ├── architecture-sync.cmd          # Χειροκίνητο CLI sync (CMD wrapper)
 │   ├── agy-init-workspace             # Αρχικοποίηση νέου project με hard gates (Bash)
 │   ├── agy-init-workspace.ps1         # Αρχικοποίηση νέου project με hard gates (PowerShell)
 │   ├── agy-arch-sync                  # Συγχρονισμός και διανομή σε workspaces (Bash)
@@ -219,7 +246,8 @@ antigravity-orchestrator/
 │   │   ├── model-routing.json         # Κεντρικό μητρώο μοντέλων Νοεμβρίου 2026
 │   │   ├── AGENTS.md                  # Παγκόσμιοι κανόνες μηχανήματος
 │   │   ├── GEMINI.md                  # Global Gemini κανόνες
-│   │   └── skills/                    # Global skills (claude, codex, opencode, review)
+│   │   ├── skills/                    # Global skills (architecture-sync, claude, codex, opencode, review)
+│   │   └── workflows/                 # Global workflows (architecture-sync fallback)
 │   └── opencode/
 │       └── opencode.json              # Generic OpenCode readonly configuration
 └── workspace-template/
@@ -233,7 +261,8 @@ antigravity-orchestrator/
         ├── hooks.json                 # Antigravity tool hooks
         ├── rules/                     # Completion contract & 4-pool council rules
         ├── scripts/                   # Όλα τα gate scripts & frontier wrappers
-        └── skills/                    # Multi-model delegation & codex review skills
+        ├── skills/                    # Multi-model delegation, codex review & architecture-sync skills
+        └── workflows/                 # Architecture sync workflow template
 ```
 
 ---

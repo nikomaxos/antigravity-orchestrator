@@ -34,9 +34,9 @@ bash .agents/scripts/run-codex-review-gate.sh       # Auto-tiers R1 / R2 / R3; c
 cat .agent-reports/codex/review-latest.md
 ```
 - **Automatic Tiering**:
-  - `R1` (`<60` LOC UI/test/config): `Codex gpt-5.6-terra (med)` → `Claude sonnet (low)` (compact context).
-  - `R2` (`<350` LOC standard CRUD/backend): `Codex gpt-6-astra (med)` → `Claude sonnet (high)`.
-  - `R3` (`>=350` LOC or critical concurrency, auth, crypto, security, or enforcement paths): `Codex gpt-6-astra (high)` → `Claude opus/sonnet (high)`.
+  - `R1` (`<60` LOC UI/test/config): `Codex gpt-6.1-terra (med)` → `Claude claude-sonnet-5-5 (med)` (compact context).
+  - `R2` (`<350` LOC standard CRUD/backend): `Codex gpt-6.1-sol (high)` → `Claude claude-sonnet-5-5 (high)`.
+  - `R3` (`>=350` LOC or critical concurrency, auth, crypto, security, or enforcement paths): `Codex gpt-6-astra (high)` → `Claude claude-opus-5-5 (high)`.
 - **Exit 1 (`FAIL`)**: Fix every `CRITICAL`/`HIGH` (and any `OWASP FAIL`), re-stage explicit paths, and re-run `run-codex-review-gate.sh`. On Round 2+, if Round 1 ran on Codex, it **automatically resumes** the prior Codex thread (`codex exec resume`) sending only the interdiff!
 - **Exit 2 (`SKIPPED_RATE_LIMIT` — ONLY after Codex + Claude + DeepSeek all unavailable/rate-limited)**:
   1. Spawn an internal subagent on **Gemini 4 Carbon** (`High` thinking level), announcing exact model + thinking level in Greek to the user.

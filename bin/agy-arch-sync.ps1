@@ -7,7 +7,8 @@
 #>
 [CmdletBinding()]
 param(
-    [switch]$Quiet = $false
+    [switch]$Quiet = $false,
+    [string]$WorkspacePath = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -28,7 +29,8 @@ $wsRegistry = Join-Path $configDir "orchestrator-workspaces.json"
 
 $repoCandidates = @(
     (Join-Path $userHome "Development\antigravity-orchestrator"),
-    "C:\Users\parda\Development\antigravity-orchestrator"
+    "C:\Users\parda\Development\antigravity-orchestrator",
+    (Join-Path $env:LOCALAPPDATA "antigravity-orchestrator")
 )
 $repoDir = ""
 foreach ($cand in $repoCandidates) {
@@ -62,6 +64,22 @@ try {
     Write-Log "   ℹ️ Git pull skipped or working tree already updated." "DarkGray"
 }
 
+# 0. Register workspace if provided
+if ($WorkspacePath -and (Test-Path $WorkspacePath)) {
+    try {
+        $resolvedWs = (Resolve-Path $WorkspacePath).Path
+        $wsList = @()
+        if (Test-Path $wsRegistry) {
+            $wsList = @(Get-Content -Path $wsRegistry -Raw -Encoding UTF8 | ConvertFrom-Json)
+        }
+        if ($wsList -notcontains $resolvedWs) {
+            $wsList += $resolvedWs
+            $wsList | ConvertTo-Json | Set-Content -Path $wsRegistry -Encoding UTF8
+            Write-Log "   -> Registered workspace: $resolvedWs" "Green"
+        }
+    } catch {}
+}
+
 # 1. Sync global rules & routing
 Write-Log "📦 Syncing global configs & skills into $configDir..." "Cyan"
 New-Item -ItemType Directory -Path $configDir -Force | Out-Null
@@ -82,17 +100,27 @@ if (Test-Path $srcGemini) {
     Copy-Item -Path $srcGemini -Destination (Join-Path $userHome ".gemini\GEMINI.md") -Force -ErrorAction SilentlyContinue
 }
 
-# Sync global skills
+# Sync global skills dynamically
 $skillsBaseDir = Join-Path $configDir "skills"
 New-Item -ItemType Directory -Path $skillsBaseDir -Force | Out-Null
-$skills = @("claude", "codex", "opencode", "multi-model-delegation", "codex-review")
-foreach ($s in $skills) {
-    $srcSkill = Join-Path $repoDir "global\gemini\config\skills\$s"
-    $destSkill = Join-Path $skillsBaseDir $s
-    if (Test-Path $srcSkill) {
+$globalSkillsSrc = Join-Path $repoDir "global\gemini\config\skills"
+if (Test-Path $globalSkillsSrc) {
+    Get-ChildItem -Path $globalSkillsSrc -Directory | ForEach-Object {
+        $destSkill = Join-Path $skillsBaseDir $_.Name
         New-Item -ItemType Directory -Path $destSkill -Force | Out-Null
-        Copy-Item -Path "$srcSkill\*" -Destination $destSkill -Recurse -Force
+        Copy-Item -Path "$($_.FullName)\*" -Destination $destSkill -Recurse -Force
     }
+}
+
+# Sync global workflows
+$srcWorkflows = Join-Path $repoDir "global\gemini\config\workflows"
+if (Test-Path $srcWorkflows) {
+    $destWorkflows = Join-Path $configDir "workflows"
+    $destGlobalWorkflows = Join-Path $configDir "global_workflows"
+    New-Item -ItemType Directory -Path $destWorkflows -Force | Out-Null
+    New-Item -ItemType Directory -Path $destGlobalWorkflows -Force | Out-Null
+    Copy-Item -Path "$srcWorkflows\*" -Destination $destWorkflows -Recurse -Force
+    Copy-Item -Path "$srcWorkflows\*" -Destination $destGlobalWorkflows -Recurse -Force
 }
 
 # 2. Sync registered workspaces
@@ -126,6 +154,22 @@ if (Test-Path $wsRegistry) {
                     if (Test-Path $srcS) {
                         Copy-Item -Path $srcS -Destination (Join-Path $wsScripts $s) -Force
                     }
+                }
+
+                # Sync workspace skills
+                $srcWsSkills = Join-Path $repoDir "workspace-template\.agents\skills"
+                if (Test-Path $srcWsSkills) {
+                    $destWsSkills = Join-Path $ws ".agents\skills"
+                    New-Item -ItemType Directory -Path $destWsSkills -Force | Out-Null
+                    Copy-Item -Path "$srcWsSkills\*" -Destination $destWsSkills -Recurse -Force
+                }
+
+                # Sync workspace workflows
+                $srcWsWorkflows = Join-Path $repoDir "workspace-template\.agents\workflows"
+                if (Test-Path $srcWsWorkflows) {
+                    $destWsWorkflows = Join-Path $ws ".agents\workflows"
+                    New-Item -ItemType Directory -Path $destWsWorkflows -Force | Out-Null
+                    Copy-Item -Path "$srcWsWorkflows\*" -Destination $destWsWorkflows -Recurse -Force
                 }
             }
         }
