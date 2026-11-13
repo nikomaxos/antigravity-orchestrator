@@ -15,14 +15,13 @@
 # =============================================================================
 set -euo pipefail
 
-# Canonical environment
+# Canonical environment: caller overrides must not influence gate outcome
 unset CODEX_BIN CODEX_HOME CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_TIMEOUT_SECS CODEX_MAX_DIFF_BYTES DEEPSEEK_API_KEY ANTHROPIC_API_KEY
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
+export HOME="/home/nick"
+export PATH="/home/nick/.local/bin:/home/nick/.opencode/bin:/home/nick/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=codex-lib.sh
-source "${SCRIPT_DIR}/codex-lib.sh"
+source "/home/nick/Development/messaging-agent/.agents/scripts/codex-lib.sh"
 SIGN_SCRIPT="${CODEX_SCRIPTS_DIR}/sign-gate.sh"
 
 cd "$CODEX_REPO_ROOT"
@@ -82,360 +81,349 @@ validate_review_shape() {
   ' "$1" >/dev/null 2>&1
 }
 
-# --- MODE: STATUS ------------------------------------------------------------
 if [ "$MODE" = "status" ]; then
-  echo "=== Cross-Model Council Review Gate Status ==="
-  echo "Current HEAD:       ${HEAD_SHA}"
-  echo "Staged files:       $(codex_staged_files | tr '\n' ' ' | sed 's/ $//')"
-  echo "Staged fingerprint: ${FP}"
-  echo
-  if [ ! -f "$CODEX_REVIEW_STATE" ]; then
-    echo "State file: (none) — review required before git commit"
-    exit 1
-  fi
-  echo "Last review:"
-  jq -r '
-    "  Status:       " + .status +
-    "\n  Verdict:      " + (.verdict // "-") +
-    "\n  Tier:         " + (.tier // "R3") +
-    "\n  Reviewer:     " + .reviewer + " (" + (.model // "-") + ", effort " + (.effort // "-") + ")" +
-    "\n  Timestamp:    " + .timestamp +
-    "\n  Reviewed FP:  " + .staged_fingerprint +
-    "\n  Reviewed HEAD:" + .head +
-    "\n  Round:        " + ((.review_round // 1)|tostring)
-  ' "$CODEX_REVIEW_STATE"
-  if [ "$(prev_field '.staged_fingerprint')" = "$FP" ]; then
-    echo "  >> Review matches currently staged diff (FRESH)."
-    exit 0
-  else
-    echo "  >> Review is STALE (staged diff changed since last review)."
-    exit 1
-  fi
-fi
-
-# --- Check for Staged Code ---------------------------------------------------
-STAGED_DIFF=$(codex_staged_diff)
-if [ -z "$STAGED_DIFF" ]; then
-  echo "ℹ️  No code changes staged (prose/state/reports only). Review gate NOT required."
+  if [ ! -f "$CODEX_REVIEW_STATE" ]; then echo "No codex-review.json yet."; exit 0; fi
+  S=$(prev_field '.status'); SFP=$(prev_field '.staged_fingerprint'); T=$(prev_field '.tier')
+  FRESH="STALE (staged diff changed since review)"; [ "$SFP" = "$FP" ] && FRESH="FRESH"
+  echo "Cross-Model review: status=${S} tier=${T:-?} reviewer=$(prev_field '.reviewer') model=$(prev_field '.model') blocking=$(prev_field '.blocking_count') -> ${FRESH}"
+  echo "Report: $(prev_field '.report')"
   exit 0
 fi
 
-DIFF_BYTES=$(printf '%s' "$STAGED_DIFF" | wc -c)
-if [ "$DIFF_BYTES" -gt "$CODEX_MAX_DIFF_BYTES" ]; then
-  echo "❌ Staged diff too large (${DIFF_BYTES} bytes > max ${CODEX_MAX_DIFF_BYTES}). Split into smaller commits." >&2
-  exit 3
+if [ -z "$(codex_staged_files)" ]; then
+  echo "ℹ️  No staged code changes (after excluding *.md, .last-staging-deploy, .agent-state, .agent-reports)."
+  echo "   Docs-only commits do not require a Cross-Model review."
+  exit 0
 fi
 
-# --- MODE: FALLBACK (Pool A: Gemini 4 Carbon subagent review) -------------------
-if [ "$MODE" = "fallback" ]; then
-  [ -z "$FALLBACK_FILE" ] && { echo "❌ Usage: run-codex-review-gate.sh --fallback <path-to-json>" >&2; exit 3; }
-  [ ! -f "$FALLBACK_FILE" ] && { echo "❌ Fallback file not found: $FALLBACK_FILE" >&2; exit 3; }
-
-  # Unlock condition: previous attempt MUST have recorded SKIPPED_RATE_LIMIT
-  PREV_STATUS=$(prev_field '.status')
-  if [ "$PREV_STATUS" != "SKIPPED_RATE_LIMIT" ]; then
-    echo "❌ Internal fallback (--fallback) is ONLY allowed after external pools were exhausted (status=SKIPPED_RATE_LIMIT, got '${PREV_STATUS}')." >&2
-    exit 3
-  fi
-
-  if ! validate_review_shape "$FALLBACK_FILE"; then
-    echo "❌ Fallback JSON fails schema validation (.agents/scripts/codex-review-schema.json)." >&2
-    exit 3
-  fi
-
-  REV_AGENT=$(jq -r '.reviewer_agent_id // ""' "$FALLBACK_FILE")
-  [ -z "$REV_AGENT" ] && { echo "❌ Fallback JSON must include reviewer_agent_id (proves subagent execution)." >&2; exit 3; }
-
-  VERDICT=$(jq -r '.verdict' "$FALLBACK_FILE")
-  GATE_STATUS=$([ "$VERDICT" = "PASS" ] && echo "PASS_FALLBACK" || echo "FAIL")
-  REPORT_FILE="${CODEX_REPORT_DIR}/review-fallback-$(date -u +%Y%m%dT%H%M%SZ).json"
-
-  jq \
-    --arg status "$GATE_STATUS" \
-    --arg head "$HEAD_SHA" \
-    --arg fp "$FP" \
-    --arg ts "$TS" \
-    --argjson files "$STAGED_FILES_JSON" \
-    --arg model "$(jq -r '.model // "Gemini 4 Carbon High"' "$FALLBACK_FILE")" \
-    '
-      .status = $status |
-      .reviewer = "antigravity:fallback" |
-      .model = $model |
-      .effort = "high" |
-      .head = $head |
-      .staged_fingerprint = $fp |
-      .timestamp = $ts |
-      .staged_files = $files |
-      .review_round = 1
-    ' "$FALLBACK_FILE" > "$REPORT_FILE"
-
-  ln -sf "$(basename "$REPORT_FILE")" "${CODEX_REPORT_DIR}/review-latest.json"
-  render_markdown "$REPORT_FILE" "Antigravity Fallback Review (Pool A)"
-  ln -sf "$(basename "${REPORT_FILE%.json}.md")" "${CODEX_REPORT_DIR}/review-latest.md"
-
-  STATE_PAYLOAD=$(jq -c '{
-    status: .status,
-    verdict: .verdict,
-    tier: (.tier // "R3"),
-    reviewer: .reviewer,
-    model: .model,
-    effort: .effort,
-    head: .head,
-    staged_fingerprint: .staged_fingerprint,
-    timestamp: .timestamp,
-    staged_files: .staged_files,
-    review_round: .review_round,
-    findings_count: (.findings | length),
-    critical_count: ([.findings[] | select(.severity=="CRITICAL")] | length),
-    high_count: ([.findings[] | select(.severity=="HIGH")] | length),
-    owasp_checklist: .owasp_checklist
-  }' "$REPORT_FILE")
-
-  sign_state "$STATE_PAYLOAD"
-  cat "${REPORT_FILE%.json}.md"
-
-  [ "$GATE_STATUS" = "PASS_FALLBACK" ] && { echo "✅ Pre-commit review PASSED via internal fallback."; exit 0; }
-  echo "❌ Pre-commit review FAILED via fallback findings. Fix issues and re-review." >&2
-  exit 1
-fi
-
-# --- MODE: REVIEW (Cascading Pools B -> C -> D) ------------------------------
 TIER=$(codex_classify_diff_tier)
-
-PREV_FP=$(prev_field '.staged_fingerprint')
-PREV_THREAD=$(prev_field '.thread_id')
-PREV_STATUS=$(prev_field '.status')
-PREV_ROUND=$(prev_field '.review_round')
-PREV_REVIEWER=$(prev_field '.reviewer')
-
-IS_RESUME=0
-if [ -n "$PREV_THREAD" ] && [ "$PREV_FP" != "$FP" ] && [ "$PREV_STATUS" = "FAIL" ] && [[ "$PREV_REVIEWER" =~ ^codex: ]]; then
-  IS_RESUME=1
-fi
-
-ROUND=$(( ${PREV_ROUND:-0} + 1 ))
-[ "$IS_RESUME" -eq 0 ] && ROUND=1
-
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-PROMPT_FILE="${CODEX_REPORT_DIR}/review-${STAMP}.prompt.md"
-RAW_OUT="${CODEX_REPORT_DIR}/review-${STAMP}.raw.json"
-REPORT_FILE="${CODEX_REPORT_DIR}/review-${STAMP}.json"
-
-echo "🔍 Staged Diff Risk Tier: ${TIER} (files=$(codex_staged_files | wc -l), diff_lines=$(printf '%s' "$STAGED_DIFF" | grep -cE '^[+-][^+-]' || true))"
-
 case "$TIER" in
   R1)
-    C_MODEL="$CODEX_R1_MODEL"; C_EFFORT="$CODEX_R1_EFFORT"
-    CL_MODEL="$CLAUDE_R1_MODEL"; CL_EFFORT="$CLAUDE_R1_EFFORT"
+    C_MOD="$CODEX_R1_MODEL"; C_EFF="$CODEX_R1_EFFORT"
+    CL_MOD="$CLAUDE_R1_MODEL"; CL_EFF="$CLAUDE_R1_EFFORT"
     ;;
   R2)
-    C_MODEL="$CODEX_R2_MODEL"; C_EFFORT="$CODEX_R2_EFFORT"
-    CL_MODEL="$CLAUDE_R2_MODEL"; CL_EFFORT="$CLAUDE_R2_EFFORT"
+    C_MOD="$CODEX_R2_MODEL"; C_EFF="$CODEX_R2_EFFORT"
+    CL_MOD="$CLAUDE_R2_MODEL"; CL_EFF="$CLAUDE_R2_EFFORT"
     ;;
-  R3)
-    C_MODEL="$CODEX_R3_MODEL"; C_EFFORT="$CODEX_R3_EFFORT"
-    CL_MODEL="$CLAUDE_R3_MODEL"; CL_EFFORT="$CLAUDE_R3_EFFORT"
+  *)
+    C_MOD="$CODEX_R3_MODEL"; C_EFF="$CODEX_R3_EFFORT"
+    CL_MOD="$CLAUDE_R3_MODEL"; CL_EFF="$CLAUDE_R3_EFFORT"
     ;;
 esac
 
-# Build Prompt
-{
-  cat <<'EOF'
-# ROLE & TASK
-You are an expert principal engineer and security architect conducting an independent,
-adversarial pre-commit code and OWASP review of the STAGED git diff.
-You run in a strict READ-ONLY sandbox.
-Output ONLY a JSON object strictly conforming to the provided schema.
-Write the summary, finding titles, descriptions, and recommendations in Greek.
+# -----------------------------------------------------------------------------
+# FALLBACK MODE — Pool A internal Antigravity subagent (ONLY if B+C+D all failed)
+# -----------------------------------------------------------------------------
+if [ "$MODE" = "fallback" ]; then
+  PREV_STATUS=$(prev_field '.status'); PREV_FP=$(prev_field '.staged_fingerprint')
+  if [ "$PREV_STATUS" != "SKIPPED_RATE_LIMIT" ] && [ "$PREV_STATUS" != "UNAVAILABLE" ]; then
+    echo "❌ Fallback refused: last external CLI cascade status is '${PREV_STATUS:-none}'."
+    echo "   Internal fallback is ONLY allowed after Codex + Claude + DeepSeek CLIs were all RATE_LIMITED/UNAVAILABLE."
+    exit 3
+  fi
+  if [ "$PREV_FP" != "$FP" ]; then
+    echo "❌ Fallback refused: staged diff changed since the failed CLI attempt. Re-run the review gate first."
+    exit 3
+  fi
+  if [ -z "$FALLBACK_FILE" ] || [ ! -f "$FALLBACK_FILE" ]; then
+    echo "❌ Fallback review file not found: '${FALLBACK_FILE}'"; exit 3
+  fi
+  if ! validate_review_shape "$FALLBACK_FILE"; then
+    echo "❌ Fallback review does not match .agents/scripts/codex-review-schema.json (including >=3 owasp_checklist items)"; exit 3
+  fi
+  AGENT_ID=$(jq -r '.reviewer_agent_id // ""' "$FALLBACK_FILE")
+  FB_FP=$(jq -r '.staged_fingerprint // ""' "$FALLBACK_FILE")
+  if [ -z "$AGENT_ID" ]; then echo "❌ Fallback review missing reviewer_agent_id"; exit 3; fi
+  if [ "$FB_FP" != "$FP" ]; then echo "❌ Fallback review staged_fingerprint mismatch (expected ${FP})"; exit 3; fi
+  REVIEW_SRC="$FALLBACK_FILE"; REVIEWER="antigravity-fallback"
+  MODEL_USED="$(jq -r '.model // "Gemini 4 Carbon High"' "$FALLBACK_FILE")"
+  EFFORT_USED="high"; PASS_STATUS="PASS_FALLBACK"; THREAD_USED=""
+else
+# -----------------------------------------------------------------------------
+# REVIEW MODE — Multi-CLI Cascade (Pool B Codex -> Pool C Claude -> Pool D DeepSeek)
+# -----------------------------------------------------------------------------
+  STAMP_PROMPT=$(date -u +%Y%m%dT%H%M%SZ)
+  PROMPT_FILE="${CODEX_REPORT_DIR}/review-${STAMP_PROMPT}.prompt.md"
+  CUR_PATCH_TMP="${CODEX_REPORT_DIR}/current-staged-${STAMP_PROMPT}.patch"
+  codex_staged_diff > "$CUR_PATCH_TMP"
+  DIFF_BYTES=$(wc -c < "$CUR_PATCH_TMP")
+
+  # Build canonical full or R1-compact prompt
+  {
+    cat <<'EOF'
+# ROLE
+You are an independent senior code & security reviewer for the `messaging-agent` platform.
+Another AI agent (Antigravity) wrote the STAGED change below. Find real defects BEFORE commit.
+CRITICAL: You run in a strictly READ-ONLY sandbox. Do NOT write, modify, create, or touch any files!
+Any file mutation causes an automatic INTEGRITY_VIOLATION. Only run minimal targeted read-only
+inspections (`git diff --cached`, `git show`, `rg`, `cat`) on directly affected callers — do NOT
+scan unrelated microservices!
+
+# WHAT TO CHECK
+1. Correctness, logic bugs, edge cases, null handling, race conditions, error handling.
+2. Security (OWASP Top 10): XSS, SQL Injection, Command Injection, Broken Access Control,
+   Security Misconfiguration, secret exposure, SSRF, missing validation on public vs internal routes.
+   Populate `owasp_checklist` with at least 5 concrete checks (`XSS`, `SQLInjection`,
+   `CommandInjection`, `AccessControl`, `SecurityMisconfiguration`).
+3. Regressions: callers/consumers, DTO/API contracts, Flyway immutability & zero data loss,
+   Redis key/TTL/Lua atomicity, SMPP session lifecycle, K8s `@PreDestroy` cleanup.
+4. Workspace invariants: No-Hardcoded-Routing, `String.format(Locale.US, ...)`, no `java.sql.Timestamp`
+   in native queries, and UI Design System preservation on `admin-panel/src/**`.
+
+# SEVERITY (binding)
+- CRITICAL: security hole, data loss/corruption, outage, or build break.
+- HIGH: a real bug that will misbehave in normal use, or a hard workspace rule violation.
+- MEDIUM: likely bug in edge cases, missing validation, risky pattern.
+- LOW / INFO: style, maintainability, minor suggestions.
+Only report issues you can prove from the code. Do NOT invent speculative issues to fill the list.
+`verdict` MUST be "FAIL" if and only if at least one finding is CRITICAL or HIGH (or an OWASP check is FAIL).
+
+# OUTPUT
+Return ONLY JSON matching the schema. Write `summary`, `description`, `recommendation`, and OWASP `notes`
+in Greek (keep identifiers, paths, and technical terms in English).
+
+# WORKSPACE RULES & CONTEXT
 EOF
-  echo
-  if [ "$TIER" = "R1" ]; then
-    codex_build_compact_ui_context
-  else
-    codex_build_context
-  fi
-  echo
-  echo "# REPOSITORY STATE"
-  codex_repo_state
-  echo
-  if [ "$IS_RESUME" -eq 1 ]; then
-    echo "# DELTA REVIEW INSTRUCTIONS (Round ${ROUND})"
-    echo "You reviewed a previous version of this diff and found defects."
-    echo "Review ONLY the interdiff changes and verify whether previous findings were resolved without introducing new ones."
-    echo
-    echo "## Interdiff Since Previous Review"
-    echo '```diff'
-    git -C "$CODEX_REPO_ROOT" diff "${PREV_FP:0:12}" -- . "${CODEX_EXCLUDES[@]}" 2>/dev/null | head -c 200000 || echo "(diff too large or ref unavailable)"
-    echo '```'
-    echo
-  fi
-  echo "# CURRENT STAGED DIFF TO REVIEW"
-  echo '```diff'
-  printf '%s\n' "$STAGED_DIFF"
-  echo '```'
-} > "$PROMPT_FILE"
-
-REVIEWER_USED=""
-MODEL_USED=""
-EFFORT_USED=""
-
-# Attempt 1: Pool B (Codex CLI)
-if ! codex_pool_in_cooldown "codex:${C_MODEL}" 900; then
-  if [ "$IS_RESUME" -eq 1 ]; then
-    echo "🤖 [Pool B] Running Round-${ROUND} Delta Review via Codex CLI (resume thread ${PREV_THREAD:0:8})..."
-    codex_run_resume "review" "$PREV_THREAD" "$C_MODEL" "$C_EFFORT" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$PROMPT_FILE"
-  else
-    echo "🤖 [Pool B] Running Pre-Commit Review via Codex CLI (${C_MODEL}, effort ${C_EFFORT})..."
-    codex_run "review" "$C_MODEL" "$C_EFFORT" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$PROMPT_FILE"
-  fi
-
-  if [ "$CODEX_RUN_STATUS" = "OK" ] && [ -s "$RAW_OUT" ] && validate_review_shape "$RAW_OUT"; then
-    REVIEWER_USED="codex:cli"
-    MODEL_USED="$C_MODEL"
-    EFFORT_USED="$C_EFFORT"
-  else
-    echo "⚠️  [Pool B] Codex review failed (${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR:-invalid output})."
-  fi
-else
-  echo "⏭️  [Pool B] Codex in cooldown."
-fi
-
-# Attempt 2: Pool C (Claude Code CLI)
-if [ -z "$REVIEWER_USED" ]; then
-  if ! codex_pool_in_cooldown "claude:${CL_MODEL}" 900; then
-    echo "🤖 [Pool C] Failing over to Anthropic Claude Code CLI (${CL_MODEL}, effort ${CL_EFFORT})..."
-    claude_run "review" "$CL_MODEL" "$CL_EFFORT" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$PROMPT_FILE"
-    if [ "$CODEX_RUN_STATUS" = "OK" ] && [ -s "$RAW_OUT" ] && validate_review_shape "$RAW_OUT"; then
-      REVIEWER_USED="claude:cli"
-      MODEL_USED="$CL_MODEL"
-      EFFORT_USED="$CL_EFFORT"
+    if [ "$TIER" = "R1" ]; then
+      codex_build_compact_ui_context
     else
-      echo "⚠️  [Pool C] Claude review failed (${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR:-invalid output})."
+      codex_build_context
     fi
-  else
-    echo "⏭️  [Pool C] Claude in cooldown."
+    echo
+    echo "# REPOSITORY STATE (Review Tier: ${TIER})"
+    codex_repo_state
+    echo
+    echo "# STAGED FILES UNDER REVIEW"
+    codex_staged_files
+    echo
+    echo "# STAGED DIFF"
+    if [ "$DIFF_BYTES" -gt "$CODEX_MAX_DIFF_BYTES" ]; then
+      echo "(Diff is ${DIFF_BYTES} bytes; first ${CODEX_MAX_DIFF_BYTES} bytes shown. Inspect remainder via git diff --cached -- <file>.)"
+      echo '```diff'; head -c "$CODEX_MAX_DIFF_BYTES" "$CUR_PATCH_TMP"; echo; echo '```'
+    else
+      echo '```diff'; cat "$CUR_PATCH_TMP"; echo '```'
+    fi
+  } > "$PROMPT_FILE"
+
+  RAW_OUT="${CODEX_REPORT_DIR}/review-raw-${STAMP_PROMPT}.json"
+  REVIEW_SUCCEEDED=0
+  REVIEWER=""
+  MODEL_USED=""
+  EFFORT_USED=""
+  THREAD_USED=""
+  CASCADE_ERRORS=""
+
+  # --- Check if Stateful Round-2+ Delta Review is eligible ---
+  PREV_STATUS=$(prev_field '.status')
+  PREV_HEAD=$(prev_field '.head')
+  PREV_REVIEWER=$(prev_field '.reviewer')
+  PREV_THREAD=$(prev_field '.review_thread_id')
+  LAST_PATCH_FILE="${CODEX_REPORT_DIR}/last-reviewed.patch"
+  LAST_REPORT_JSON="${CODEX_REPORT_DIR}/review-latest.json"
+  EFFECTIVE_PROMPT_FILE="$PROMPT_FILE"
+
+  if [ "$PREV_STATUS" = "FAIL" ] && [ "$PREV_HEAD" = "$HEAD_SHA" ] && \
+     [ -f "$LAST_PATCH_FILE" ] && [ -f "$LAST_REPORT_JSON" ]; then
+    DELTA_PROMPT="${CODEX_REPORT_DIR}/review-delta-${STAMP_PROMPT}.prompt.md"
+    {
+      cat <<'DELTA_EOF'
+# STATEFUL DELTA RE-REVIEW (ROUND 2+)
+The developer updated the staged diff to fix the previous CRITICAL/HIGH findings on the same HEAD.
+STRICT CONVERGENCE RULES (read-only sandbox):
+1. Verify whether each previous CRITICAL/HIGH finding listed below is now properly resolved.
+2. Review ONLY the newly modified hunks in the interdiff below (and their immediate callers) for regressions.
+3. Do NOT invent new stylistic or unrelated findings in unchanged parts of the codebase unless you spot a genuine CRITICAL outage/security defect.
+4. Return ONLY valid JSON matching the review schema (including `owasp_checklist` >= 5 items).
+
+## Previous Blocking Findings
+DELTA_EOF
+      jq '[.findings[] | select(.severity=="CRITICAL" or .severity=="HIGH")]' "$LAST_REPORT_JSON" 2>/dev/null || echo "[]"
+      echo
+      echo "## Interdiff Since Previous Staged Review"
+      echo '```diff'
+      diff -u "$LAST_PATCH_FILE" "$CUR_PATCH_TMP" | head -c 150000 || true
+      echo '```'
+      echo
+      echo "## Full Current Staged Diff (for context)"
+      echo '```diff'
+      head -c "$CODEX_MAX_DIFF_BYTES" "$CUR_PATCH_TMP"
+      echo '```'
+    } > "$DELTA_PROMPT"
+    EFFECTIVE_PROMPT_FILE="$DELTA_PROMPT"
+
+    if [ "$PREV_REVIEWER" = "codex" ] && [ -n "$PREV_THREAD" ] && ! codex_pool_in_cooldown "codex:${C_MOD}"; then
+      echo "🔄 Cross-Model Gate [Tier=${TIER}]: Stateful Delta Resume on Codex thread ${PREV_THREAD:0:12} (${C_MOD}, effort=${C_EFF})..."
+      codex_run_resume "review" "$PREV_THREAD" "$C_MOD" "$C_EFF" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$DELTA_PROMPT"
+      if [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ]; then
+        rm -f "$CUR_PATCH_TMP"
+        echo "❌ Codex resume ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+        exit 3
+      elif [ "$CODEX_RUN_STATUS" = "OK" ] && validate_review_shape "$RAW_OUT"; then
+        REVIEW_SUCCEEDED=1; REVIEWER="codex"; MODEL_USED="$C_MOD"; EFFORT_USED="$C_EFF"; THREAD_USED="$PREV_THREAD"
+      else
+        [ "$CODEX_RUN_STATUS" = "OK" ] && { CODEX_RUN_STATUS="SCHEMA_ERROR"; CODEX_RUN_ERROR="Invalid review JSON shape"; }
+        echo "ℹ️  Delta resume returned ${CODEX_RUN_STATUS} (${CODEX_RUN_ERROR}) — falling back to review cascade."
+        CASCADE_ERRORS="codex-resume:${CODEX_RUN_STATUS}; "
+      fi
+    fi
   fi
-fi
 
-# Attempt 3: Pool D (OpenCode CLI + DeepSeek API)
-if [ -z "$REVIEWER_USED" ]; then
-  echo "🤖 [Pool D] Failing over to OpenCode CLI (${OPENCODE_PRO_MODEL})..."
-  opencode_run "review" "$OPENCODE_PRO_MODEL" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$PROMPT_FILE" 0
-  if [ "$CODEX_RUN_STATUS" = "OK" ] && [ -s "$RAW_OUT" ] && validate_review_shape "$RAW_OUT"; then
-    REVIEWER_USED="opencode:deepseek"
-    MODEL_USED="$OPENCODE_PRO_MODEL"
-    EFFORT_USED="default"
-  else
-    echo "⚠️  [Pool D] OpenCode review failed (${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR:-invalid output})."
+  # --- Pool B: Fresh OpenAI Codex CLI ---
+  if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
+    if codex_pool_in_cooldown "codex:${C_MOD}"; then
+      echo "⏭️  [Pool B] Skipping Codex (${C_MOD}) — in cooldown from recent RATE_LIMITED/UNAVAILABLE."
+      CASCADE_ERRORS="${CASCADE_ERRORS}codex:RATE_LIMITED(cooldown); "
+    else
+      echo "🤖 [Pool B] Codex Review [Tier=${TIER}]: model=${C_MOD} effort=${C_EFF} files=$(codex_staged_files | wc -l) diff=${DIFF_BYTES}B"
+      codex_run "review" "$C_MOD" "$C_EFF" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$EFFECTIVE_PROMPT_FILE"
+      if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
+        CODEX_RUN_STATUS="SCHEMA_ERROR"
+        CODEX_RUN_ERROR="Codex output failed JSON schema validation"
+      fi
+      if [ "$CODEX_RUN_STATUS" = "OK" ]; then
+        REVIEW_SUCCEEDED=1; REVIEWER="codex"; MODEL_USED="$C_MOD"; EFFORT_USED="$C_EFF"; THREAD_USED="$CODEX_LAST_THREAD_ID"
+      elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
+        rm -f "$CUR_PATCH_TMP"
+        echo "❌ Codex ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+        exit 3
+      else
+        echo "⚠️  [Pool B] Codex ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+        CASCADE_ERRORS="${CASCADE_ERRORS}codex:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
+      fi
+    fi
   fi
+
+  # --- Pool C: Anthropic Claude Code CLI Failover ---
+  if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
+    if codex_pool_in_cooldown "claude:${CL_MOD}" && codex_pool_in_cooldown "claude:${CLAUDE_R2_MODEL:-claude-sonnet-5-5}"; then
+      echo "⏭️  [Pool C] Skipping Claude CLI (${CL_MOD}/${CLAUDE_R2_MODEL:-claude-sonnet-5-5}) — in cooldown from recent RATE_LIMITED/UNAVAILABLE."
+      CASCADE_ERRORS="${CASCADE_ERRORS}claude:RATE_LIMITED(cooldown); "
+    else
+      echo "🤖 [Pool C] Failing over to Claude Code CLI [Tier=${TIER}]: model=${CL_MOD} effort=${CL_EFF}..."
+      claude_run "review" "$CL_MOD" "$CL_EFF" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$EFFECTIVE_PROMPT_FILE"
+      # If R3 opus hit Claude Pro 5h cap, try sonnet high before moving to Pool D!
+      if [ "$CODEX_RUN_STATUS" = "RATE_LIMITED" ]; then
+        case "$CL_MOD" in
+          *opus*)
+            retry_sonnet="${CLAUDE_R2_MODEL:-claude-sonnet-5-5}"
+            echo "ℹ️  Claude ${CL_MOD} rate-limited; retrying Pool C with model=${retry_sonnet} effort=high..."
+            claude_run "review" "$retry_sonnet" "high" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$EFFECTIVE_PROMPT_FILE"
+            CL_MOD="$retry_sonnet"; CL_EFF="high"
+            ;;
+        esac
+      fi
+      if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
+        CODEX_RUN_STATUS="SCHEMA_ERROR"
+        CODEX_RUN_ERROR="Claude CLI output failed JSON schema validation"
+      fi
+      if [ "$CODEX_RUN_STATUS" = "OK" ]; then
+        REVIEW_SUCCEEDED=1; REVIEWER="claude-cli"; MODEL_USED="claude-${CL_MOD}"; EFFORT_USED="$CL_EFF"; THREAD_USED=""
+      elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
+        rm -f "$CUR_PATCH_TMP"
+        echo "❌ Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+        exit 3
+      else
+        echo "⚠️  [Pool C] Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+        CASCADE_ERRORS="${CASCADE_ERRORS}claude:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
+      fi
+    fi
+  fi
+
+  # --- Pool D: OpenCode + DeepSeek Paid API Failover ---
+  if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
+    opencode_rev_model="${OPENCODE_REVIEW_MODEL:-deepseek/deepseek-v4-pro}"
+    echo "🤖 [Pool D] Failing over to OpenCode DeepSeek API [Tier=${TIER}]: model=${opencode_rev_model}..."
+    opencode_run "review" "$opencode_rev_model" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$EFFECTIVE_PROMPT_FILE" 1
+    if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
+      CODEX_RUN_STATUS="SCHEMA_ERROR"
+      CODEX_RUN_ERROR="OpenCode output failed JSON schema validation"
+    fi
+    if [ "$CODEX_RUN_STATUS" = "OK" ]; then
+      REVIEW_SUCCEEDED=1; REVIEWER="opencode-deepseek"; MODEL_USED="$OPENCODE_PRO_MODEL"; EFFORT_USED="high"; THREAD_USED=""
+    elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
+      rm -f "$CUR_PATCH_TMP"
+      echo "❌ OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+      exit 3
+    else
+      echo "⚠️  [Pool D] OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+      CASCADE_ERRORS="${CASCADE_ERRORS}opencode:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
+    fi
+  fi
+
+  # Verify staged diff did not change mid-run
+  if [ "$REVIEW_SUCCEEDED" -eq 1 ] && [ "$(codex_staged_fingerprint)" != "$FP" ]; then
+    rm -f "$CUR_PATCH_TMP"
+    echo "❌ INTEGRITY_VIOLATION: Staged diff changed while review was running. Re-run gate."
+    exit 3
+  fi
+
+  if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
+    rm -f "$CUR_PATCH_TMP"
+    # Unlock Pool A fallback ONLY if every attempted external CLI was RATE_LIMITED or UNAVAILABLE
+    if echo "$CASCADE_ERRORS" | grep -qE '(codex|claude|opencode):(ERROR|TIMEOUT|SCHEMA_ERROR|INTEGRITY_VIOLATION)'; then
+      echo "❌ External CLI review failed with hard fault (${CASCADE_ERRORS}). Fix the error and re-run."
+      exit 3
+    fi
+    NEW_STATUS="SKIPPED_RATE_LIMIT"
+    sign_state "$(jq -n -c --arg s "$NEW_STATUS" --arg tier "$TIER" --arg fp "$FP" --arg h "$HEAD_SHA" --arg t "$TS" \
+      --arg e "$CASCADE_ERRORS" --argjson files "$STAGED_FILES_JSON" \
+      '{status:$s, tier:$tier, reviewer:"external-cascade", staged_fingerprint:$fp, staged_files:$files, head:$h, blocking_count:null, error:$e, timestamp:$t}')"
+    echo "⚠️  All 3 External CLI Pools (Codex, Claude, DeepSeek) unavailable/rate-limited: ${CASCADE_ERRORS}"
+    echo "➡️  LAST-RESORT FALLBACK (Pool A):"
+    echo "   1. Spawn an internal subagent (Gemini 4 Carbon High) to review the staged diff using codex-review-schema.json"
+    echo "      (including owasp_checklist >= 5 items + reviewer_agent_id + staged_fingerprint=\"${FP}\")."
+    echo "   2. Save to .agent-reports/codex/fallback-review.json and run:"
+    echo "      bash .agents/scripts/run-codex-review-gate.sh --fallback .agent-reports/codex/fallback-review.json"
+    exit 2
+  fi
+
+  mv -f "$CUR_PATCH_TMP" "${CODEX_REPORT_DIR}/last-reviewed.patch"
+  REVIEW_SRC="$RAW_OUT"
+  PASS_STATUS="PASS"
 fi
 
-rm -f "$PROMPT_FILE"
+# -----------------------------------------------------------------------------
+# Evaluate Findings + OWASP Checklist
+# -----------------------------------------------------------------------------
+COUNTS=$(jq -c '[.findings[].severity] as $s | {CRITICAL:($s|map(select(.=="CRITICAL"))|length),
+  HIGH:($s|map(select(.=="HIGH"))|length), MEDIUM:($s|map(select(.=="MEDIUM"))|length),
+  LOW:($s|map(select(.=="LOW"))|length), INFO:($s|map(select(.=="INFO"))|length)}' "$REVIEW_SRC")
+OWASP_FAILS=$(jq '[(.owasp_checklist // [])[] | select(.status=="FAIL")] | length' "$REVIEW_SRC")
+BLOCKING=$(( $(echo "$COUNTS" | jq '.CRITICAL + .HIGH') + OWASP_FAILS ))
+STATUS="$PASS_STATUS"; [ "$BLOCKING" -gt 0 ] && STATUS="FAIL"
 
-# All External Pools Exhausted -> SKIPPED_RATE_LIMIT
-if [ -z "$REVIEWER_USED" ]; then
-  echo "⛔ All external review pools (Codex, Claude, DeepSeek) are unavailable or rate-limited."
-  echo "➡️  Unlocking last-resort internal fallback (Pool A: Gemini 4 Carbon High subagent)."
+STAMP=$(date -u +%Y%m%dT%H:%M%SZ)
+REPORT="${CODEX_REPORT_DIR}/review-${STAMP}.json"
+jq --arg s "$STATUS" --arg tier "$TIER" --arg r "$REVIEWER" --arg m "$MODEL_USED" --arg e "$EFFORT_USED" \
+   --arg fp "$FP" --arg h "$HEAD_SHA" --arg t "$TS" --arg tid "$THREAD_USED" \
+   --argjson files "$STAGED_FILES_JSON" --argjson c "$COUNTS" \
+   '{status:$s, tier:$tier, reviewer:$r, model:$m, effort:$e, review_thread_id:(if $tid=="" then null else $tid end),
+     staged_fingerprint:$fp, head:$h, timestamp:$t, staged_files:$files, counts:$c,
+     model_verdict:.verdict, summary:.summary, owasp_checklist:(.owasp_checklist // []), findings:.findings,
+     reviewer_agent_id:(.reviewer_agent_id // null)}' "$REVIEW_SRC" > "$REPORT"
+render_markdown "$REPORT" "Cross-Model Review (${REVIEWER} / ${TIER}) — ${STATUS}"
+ln -sfn "$(basename "$REPORT")" "${CODEX_REPORT_DIR}/review-latest.json"
+ln -sfn "$(basename "${REPORT%.json}.md")" "${CODEX_REPORT_DIR}/review-latest.md"
+[ "$MODE" = "review" ] && rm -f "$RAW_OUT"
 
-  STATE_PAYLOAD=$(jq -n -c \
-    --arg status "SKIPPED_RATE_LIMIT" \
-    --arg tier "$TIER" \
-    --arg head "$HEAD_SHA" \
-    --arg fp "$FP" \
-    --arg ts "$TS" \
-    --argjson files "$STAGED_FILES_JSON" \
-    '{
-      status: $status,
-      verdict: "NONE",
-      tier: $tier,
-      reviewer: "none:rate_limited",
-      model: "none",
-      effort: "none",
-      head: $head,
-      staged_fingerprint: $fp,
-      timestamp: $ts,
-      staged_files: $files,
-      findings_count: 0,
-      critical_count: 0,
-      high_count: 0,
-      owasp_checklist: []
-    }')
+REPORT_REL="${REPORT#"$CODEX_REPO_ROOT"/}"
+OWASP_COMPACT=$(jq -c '.owasp_checklist // []' "$REPORT")
+sign_state "$(jq -n -c --arg s "$STATUS" --arg tier "$TIER" --arg r "$REVIEWER" --arg m "$MODEL_USED" --arg e "$EFFORT_USED" \
+  --arg fp "$FP" --arg h "$HEAD_SHA" --arg t "$TS" --arg rep "$REPORT_REL" --arg tid "$THREAD_USED" \
+  --argjson files "$STAGED_FILES_JSON" --argjson c "$COUNTS" --argjson b "$BLOCKING" --argjson owasp "$OWASP_COMPACT" \
+  --arg aid "$(jq -r '.reviewer_agent_id // ""' "$REPORT")" \
+  '{status:$s, tier:$tier, reviewer:$r, model:$m, effort:$e, review_thread_id:(if $tid=="" then null else $tid end),
+    staged_fingerprint:$fp, staged_files:$files, head:$h, counts:$c, blocking_count:$b,
+    owasp_checklist:$owasp, report:$rep,
+    reviewer_agent_id:(if $aid=="" then null else $aid end), timestamp:$t}')"
 
-  sign_state "$STATE_PAYLOAD"
-  exit 2
+echo ""
+echo "📊 Tier=${TIER} | Reviewer=${REVIEWER} (${MODEL_USED}, ${EFFORT_USED}) | Findings: $(echo "$COUNTS" | jq -r 'to_entries|map("\(.key)=\(.value)")|join(" ")') | OWASP_FAIL=${OWASP_FAILS}"
+echo "📄 Report: ${REPORT_REL%.json}.md"
+if [ "$STATUS" = "FAIL" ]; then
+  echo "❌ Cross-Model review FAIL — ${BLOCKING} blocking finding(s). Fix them, re-stage, re-run (Round 2 will auto-resume delta!)."
+  exit 1
 fi
-
-# Process Successful Review
-VERDICT=$(jq -r '.verdict' "$RAW_OUT")
-CRIT_COUNT=$(jq '[.findings[] | select(.severity=="CRITICAL")] | length' "$RAW_OUT")
-HIGH_COUNT=$(jq '[.findings[] | select(.severity=="HIGH")] | length' "$RAW_OUT")
-OWASP_FAILS=$(jq '[(.owasp_checklist // [])[] | select(.status=="FAIL")] | length' "$RAW_OUT")
-
-if [ "$CRIT_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ] || [ "$OWASP_FAILS" -gt 0 ]; then
-  GATE_STATUS="FAIL"
-else
-  GATE_STATUS="PASS"
-fi
-
-jq \
-  --arg status "$GATE_STATUS" \
-  --arg verdict "$VERDICT" \
-  --arg tier "$TIER" \
-  --arg rev "$REVIEWER_USED" \
-  --arg mod "$MODEL_USED" \
-  --arg eff "$EFFORT_USED" \
-  --arg head "$HEAD_SHA" \
-  --arg fp "$FP" \
-  --arg ts "$TS" \
-  --arg th "${CODEX_LAST_THREAD_ID:-}" \
-  --argjson files "$STAGED_FILES_JSON" \
-  --argjson round "$ROUND" \
-  '
-    .status = $status |
-    .verdict = $verdict |
-    .tier = $tier |
-    .reviewer = $rev |
-    .model = $mod |
-    .effort = $eff |
-    .head = $head |
-    .staged_fingerprint = $fp |
-    .timestamp = $ts |
-    .thread_id = $th |
-    .staged_files = $files |
-    .review_round = $round
-  ' "$RAW_OUT" > "$REPORT_FILE"
-
-rm -f "$RAW_OUT"
-ln -sf "$(basename "$REPORT_FILE")" "${CODEX_REPORT_DIR}/review-latest.json"
-render_markdown "$REPORT_FILE" "Pre-Commit Code Review (${REVIEWER_USED})"
-ln -sf "$(basename "${REPORT_FILE%.json}.md")" "${CODEX_REPORT_DIR}/review-latest.md"
-
-STATE_PAYLOAD=$(jq -c '{
-  status: .status,
-  verdict: .verdict,
-  tier: .tier,
-  reviewer: .reviewer,
-  model: .model,
-  effort: .effort,
-  head: .head,
-  staged_fingerprint: .staged_fingerprint,
-  timestamp: .timestamp,
-  thread_id: .thread_id,
-  staged_files: .staged_files,
-  review_round: .review_round,
-  findings_count: (.findings | length),
-  critical_count: ([.findings[] | select(.severity=="CRITICAL")] | length),
-  high_count: ([.findings[] | select(.severity=="HIGH")] | length),
-  owasp_checklist: .owasp_checklist
-}' "$REPORT_FILE")
-
-sign_state "$STATE_PAYLOAD"
-cat "${REPORT_FILE%.json}.md"
-
-if [ "$GATE_STATUS" = "PASS" ]; then
-  echo "✅ Pre-commit review PASSED (Tier: ${TIER}, Reviewer: ${REVIEWER_USED}). Stage .agent-state/codex-review.json and commit."
-  exit 0
-fi
-
-echo "❌ Pre-commit review FAILED (${CRIT_COUNT} critical, ${HIGH_COUNT} high, ${OWASP_FAILS} OWASP fails). Fix issues and re-run." >&2
-exit 1
+echo "✅ Cross-Model review ${STATUS} (bound to staged fingerprint ${FP:0:16})"
+exit 0

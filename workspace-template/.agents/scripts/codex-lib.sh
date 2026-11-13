@@ -15,48 +15,125 @@
 # Every external CLI invocation verifies `before_fp == after_fp` on the worktree!
 # =============================================================================
 
-if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then
-  if [ -n "${USERPROFILE:-}" ]; then
-    if command -v cygpath >/dev/null 2>&1; then
-      HOME="$(cygpath -u "$USERPROFILE")"
-    else
-      HOME="$USERPROFILE"
-    fi
-  elif command -v getent >/dev/null 2>&1; then
-    HOME="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "")"
-  fi
-fi
-export HOME="${HOME:-/home/nick}"
-CODEX_REPO_ROOT="${CODEX_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-if command -v cygpath >/dev/null 2>&1; then
-  CODEX_REPO_ROOT="$(cygpath -m "$CODEX_REPO_ROOT" 2>/dev/null || echo "$CODEX_REPO_ROOT")"
-fi
+CODEX_REPO_ROOT="/home/nick/Development/messaging-agent"
 CODEX_REPORT_DIR="${CODEX_REPO_ROOT}/.agent-reports/codex"
 CODEX_USAGE_LOG="${CODEX_REPORT_DIR}/usage.log"
 CODEX_SCRIPTS_DIR="${CODEX_REPO_ROOT}/.agents/scripts"
 CODEX_REVIEW_STATE_REL=".agent-state/codex-review.json"
 CODEX_REVIEW_STATE="${CODEX_REPO_ROOT}/${CODEX_REVIEW_STATE_REL}"
 CODEX_REVIEW_SCHEMA="${CODEX_SCRIPTS_DIR}/codex-review-schema.json"
-LLM_COUNCIL_SECRETS="${HOME}/.config/llm-council/secrets.env"
+LLM_COUNCIL_SECRETS="/home/nick/.config/llm-council/secrets.env"
 
-# --- Default Model Routing (Tier R3 / RCA defaults) --------------------------
+# --- Default Model Routing (Dynamic from model-routing.json with Safe Defaults) ---
 CODEX_RCA_MODEL="${CODEX_RCA_MODEL:-gpt-6-astra}"
 CODEX_RCA_EFFORT="${CODEX_RCA_EFFORT:-xhigh}"
 CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-6-astra}"
 CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-high}"
 
 # Tier-specific Review Routing (R1: light UI/test, R2: standard CRUD, R3: critical)
-CODEX_R1_MODEL="gpt-5.6-terra"; CODEX_R1_EFFORT="medium"
-CODEX_R2_MODEL="gpt-6-astra";   CODEX_R2_EFFORT="medium"
+CODEX_R1_MODEL="gpt-6.1-terra"; CODEX_R1_EFFORT="medium"
+CODEX_R2_MODEL="gpt-6.1-sol";   CODEX_R2_EFFORT="high"
 CODEX_R3_MODEL="gpt-6-astra";   CODEX_R3_EFFORT="high"
 
-CLAUDE_R1_MODEL="sonnet"; CLAUDE_R1_EFFORT="low"
-CLAUDE_R2_MODEL="sonnet"; CLAUDE_R2_EFFORT="high"
-CLAUDE_R3_MODEL="opus";   CLAUDE_R3_EFFORT="high"
+CLAUDE_R1_MODEL="claude-sonnet-5-5"; CLAUDE_R1_FALLBACK="sonnet"; CLAUDE_R1_EFFORT="medium"
+CLAUDE_R2_MODEL="claude-sonnet-5-5"; CLAUDE_R2_FALLBACK="sonnet"; CLAUDE_R2_EFFORT="high"
+CLAUDE_R3_MODEL="claude-opus-5-5";   CLAUDE_R3_FALLBACK="opus";   CLAUDE_R3_EFFORT="high"
+CLAUDE_RCA_MODEL="claude-opus-5-5";  CLAUDE_RCA_FALLBACK="opus";  CLAUDE_RCA_EFFORT="high"
 
 OPENCODE_PRO_MODEL="deepseek/deepseek-v4-pro"
 OPENCODE_FLASH_MODEL="deepseek/deepseek-flash"
 OPENCODE_FREE_MODEL="opencode/deepseek-v4.1-flash-free"
+
+llm_validate_model() {
+  local val="$1" default_val="$2"
+  # Disallow classifier-matching keywords that could trigger false RATE_LIMITED/UNAVAILABLE
+  if [[ "$val" =~ (rate|limit|quota|429|401|unauthori|balance) ]]; then
+    echo "$default_val"
+    return 0
+  fi
+  if [[ "$val" =~ ^((deepseek|opencode)/[a-z0-9.-]+|gpt-[0-9.]+-[a-z0-9]+|claude-[a-z0-9.-]+|opus|sonnet|haiku)$ ]]; then
+    echo "$val"
+  else
+    echo "$default_val"
+  fi
+}
+llm_validate_effort() {
+  local val="$1" default_val="$2"
+  if [[ "$val" =~ ^(low|medium|high|xhigh)$ ]]; then
+    echo "$val"
+  else
+    echo "$default_val"
+  fi
+}
+
+llm_load_model_routing() {
+  local cfg="${MODEL_ROUTING_FILE:-${HOME}/.gemini/config/model-routing.json}"
+  local repo_cfg=""
+  if [ -n "${CODEX_REPO_ROOT:-}" ] && [ -f "${CODEX_REPO_ROOT}/.agents/config/model-routing.json" ]; then
+    repo_cfg="${CODEX_REPO_ROOT}/.agents/config/model-routing.json"
+  fi
+  local active_cfg="$cfg"
+  [ ! -f "$active_cfg" ] && active_cfg="$repo_cfg"
+
+  # Review cascades: prefer committed HEAD config if available to prevent uncommitted worktree gate tampering
+  local review_json=""
+  if [ -n "${CODEX_REPO_ROOT:-}" ]; then
+    review_json=$(git -C "$CODEX_REPO_ROOT" show HEAD:.agents/config/model-routing.json 2>/dev/null || true)
+  fi
+  local review_cfg=""
+  if [ -n "$review_json" ]; then
+    review_cfg="<COMMITTED_HEAD>"
+  elif [ -n "$repo_cfg" ] && [ -f "$repo_cfg" ]; then
+    review_cfg="$repo_cfg"
+  elif [ -f "$active_cfg" ]; then
+    review_cfg="$active_cfg"
+  fi
+
+  _jq_review() {
+    local query="$1" def="$2"
+    if [ "$review_cfg" = "<COMMITTED_HEAD>" ]; then
+      printf '%s' "$review_json" | jq -r "$query" 2>/dev/null || echo "$def"
+    elif [ -n "$review_cfg" ] && [ -f "$review_cfg" ]; then
+      jq -r "$query" "$review_cfg" 2>/dev/null || echo "$def"
+    else
+      echo "$def"
+    fi
+  }
+
+  if command -v jq >/dev/null 2>&1; then
+    CODEX_R1_MODEL=$(llm_validate_model "$(_jq_review '.review_cascades.r1.pool_b.model // "gpt-6.1-terra"' 'gpt-6.1-terra')" "gpt-6.1-terra")
+    CODEX_R1_EFFORT=$(llm_validate_effort "$(_jq_review '.review_cascades.r1.pool_b.effort // "medium"' 'medium')" "medium")
+    CODEX_R2_MODEL=$(llm_validate_model "$(_jq_review '.review_cascades.r2.pool_b.model // "gpt-6.1-sol"' 'gpt-6.1-sol')" "gpt-6.1-sol")
+    CODEX_R2_EFFORT=$(llm_validate_effort "$(_jq_review '.review_cascades.r2.pool_b.effort // "high"' 'high')" "high")
+    CODEX_R3_MODEL=$(llm_validate_model "$(_jq_review '.review_cascades.r3.pool_b.model // "gpt-6-astra"' 'gpt-6-astra')" "gpt-6-astra")
+    CODEX_R3_EFFORT=$(llm_validate_effort "$(_jq_review '.review_cascades.r3.pool_b.effort // "high"' 'high')" "high")
+    CODEX_REVIEW_MODEL="${CODEX_R3_MODEL}"
+    CODEX_REVIEW_EFFORT="${CODEX_R3_EFFORT}"
+
+    CLAUDE_R1_MODEL=$(llm_validate_model "$(_jq_review '.review_cascades.r1.pool_c.model // "claude-sonnet-5-5"' 'claude-sonnet-5-5')" "claude-sonnet-5-5")
+    CLAUDE_R1_FALLBACK=$(llm_validate_model "$(_jq_review '.review_cascades.r1.pool_c.fallback // "sonnet"' 'sonnet')" "sonnet")
+    CLAUDE_R1_EFFORT=$(llm_validate_effort "$(_jq_review '.review_cascades.r1.pool_c.effort // "medium"' 'medium')" "medium")
+    CLAUDE_R2_MODEL=$(llm_validate_model "$(_jq_review '.review_cascades.r2.pool_c.model // "claude-sonnet-5-5"' 'claude-sonnet-5-5')" "claude-sonnet-5-5")
+    CLAUDE_R2_FALLBACK=$(llm_validate_model "$(_jq_review '.review_cascades.r2.pool_c.fallback // "sonnet"' 'sonnet')" "sonnet")
+    CLAUDE_R2_EFFORT=$(llm_validate_effort "$(_jq_review '.review_cascades.r2.pool_c.effort // "high"' 'high')" "high")
+    CLAUDE_R3_MODEL=$(llm_validate_model "$(_jq_review '.review_cascades.r3.pool_c.model // "claude-opus-5-5"' 'claude-opus-5-5')" "claude-opus-5-5")
+    CLAUDE_R3_FALLBACK=$(llm_validate_model "$(_jq_review '.review_cascades.r3.pool_c.fallback // "opus"' 'opus')" "opus")
+    CLAUDE_R3_EFFORT=$(llm_validate_effort "$(_jq_review '.review_cascades.r3.pool_c.effort // "high"' 'high')" "high")
+    OPENCODE_REVIEW_MODEL=$(llm_validate_model "$(_jq_review '.review_cascades.r3.pool_d.model // "deepseek/deepseek-v4-pro"' 'deepseek/deepseek-v4-pro')" "deepseek/deepseek-v4-pro")
+  fi
+
+  if [ -f "$active_cfg" ] && command -v jq >/dev/null 2>&1; then
+    CODEX_RCA_MODEL=$(llm_validate_model "$(jq -r '.pools.pool_b.models.rca.primary // "gpt-6-astra"' "$active_cfg" 2>/dev/null || echo "gpt-6-astra")" "gpt-6-astra")
+    CODEX_RCA_EFFORT=$(llm_validate_effort "$(jq -r '.pools.pool_b.models.rca.primary_effort // "xhigh"' "$active_cfg" 2>/dev/null || echo "xhigh")" "xhigh")
+    CLAUDE_RCA_MODEL=$(llm_validate_model "$(jq -r '.pools.pool_c.models.rca.primary // "claude-opus-5-5"' "$active_cfg" 2>/dev/null || echo "claude-opus-5-5")" "claude-opus-5-5")
+    CLAUDE_RCA_FALLBACK=$(llm_validate_model "$(jq -r '.pools.pool_c.models.rca.fallback // "opus"' "$active_cfg" 2>/dev/null || echo "opus")" "opus")
+    CLAUDE_RCA_EFFORT=$(llm_validate_effort "$(jq -r '.pools.pool_c.models.rca.primary_effort // "high"' "$active_cfg" 2>/dev/null || echo "high")" "high")
+    OPENCODE_PRO_MODEL=$(llm_validate_model "$(jq -r '.pools.pool_d.models.pro_fallback.primary // "deepseek/deepseek-v4-pro"' "$active_cfg" 2>/dev/null || echo "deepseek/deepseek-v4-pro")" "deepseek/deepseek-v4-pro")
+    OPENCODE_FLASH_MODEL=$(llm_validate_model "$(jq -r '.pools.pool_d.models.t1_flash.primary // "deepseek/deepseek-flash"' "$active_cfg" 2>/dev/null || echo "deepseek/deepseek-flash")" "deepseek/deepseek-flash")
+    OPENCODE_FREE_MODEL=$(llm_validate_model "$(jq -r '.pools.pool_d.models.t1_flash.free_fallback // "opencode/deepseek-v4.1-flash-free"' "$active_cfg" 2>/dev/null || echo "opencode/deepseek-v4.1-flash-free")" "opencode/deepseek-v4.1-flash-free")
+  fi
+}
+llm_load_model_routing
 
 CODEX_TIMEOUT_SECS="${CODEX_TIMEOUT_SECS:-1800}"
 CODEX_MAX_DIFF_BYTES="${CODEX_MAX_DIFF_BYTES:-400000}"
@@ -70,7 +147,6 @@ CODEX_EXCLUDES=(
   ":(exclude).last-staging-deploy"
   ":(exclude)*.md"
   ":(exclude)platform-docs"
-  ":(exclude)docs"
 )
 
 # Shared non-code exclusions for QA/Regression/Skills worktree hashes
@@ -81,7 +157,6 @@ NON_CODE_WORKTREE_EXCLUDES=(
   ":(exclude)*.md"
   ":(exclude).agents/skills"
   ":(exclude)platform-docs"
-  ":(exclude)docs"
 )
 
 # Run results (populated by codex_run / codex_run_resume / claude_run / opencode_run)
@@ -96,7 +171,7 @@ CODEX_LAST_THREAD_ID=""
 # -----------------------------------------------------------------------------
 codex_resolve_bin() {
   if [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN}" ]; then echo "${CODEX_BIN}"; return 0; fi
-  local home="${HOME}" candidate=""
+  local home="${HOME:-/home/nick}" candidate=""
   if [ -x "${home}/.npm-global/bin/codex" ]; then echo "${home}/.npm-global/bin/codex"; return 0; fi
   candidate=$(ls -d "${home}"/.antigravity/extensions/openai.chatgpt-*/bin/linux-*/codex 2>/dev/null | sort -V | tail -1 || true)
   if [ -n "$candidate" ] && [ -x "$candidate" ]; then echo "$candidate"; return 0; fi
@@ -105,7 +180,7 @@ codex_resolve_bin() {
 }
 
 claude_resolve_bin() {
-  local home="${HOME}"
+  local home="${HOME:-/home/nick}"
   if [ -x "${home}/.local/bin/claude" ]; then echo "${home}/.local/bin/claude"; return 0; fi
   if [ -x "${home}/.npm-global/bin/claude" ]; then echo "${home}/.npm-global/bin/claude"; return 0; fi
   if command -v claude >/dev/null 2>&1; then command -v claude; return 0; fi
@@ -113,7 +188,7 @@ claude_resolve_bin() {
 }
 
 opencode_resolve_bin() {
-  local home="${HOME}"
+  local home="${HOME:-/home/nick}"
   if [ -x "${home}/.opencode/bin/opencode" ]; then echo "${home}/.opencode/bin/opencode"; return 0; fi
   if [ -x "${home}/.local/bin/opencode" ]; then echo "${home}/.local/bin/opencode"; return 0; fi
   if command -v opencode >/dev/null 2>&1; then command -v opencode; return 0; fi
@@ -160,7 +235,7 @@ codex_code_worktree_hash() {
   )
 }
 
-codex_pool_in_cooldown() {
+codex_pool_in_cooldown() {  # $1 = provider_model (e.g. "codex:gpt-6-astra"), $2 = cooldown_secs (default 900)
   local pm="$1" cd_secs="${2:-900}"
   [ -f "$CODEX_USAGE_LOG" ] || return 1
   local last_line ts_str status now_ep last_ep
@@ -192,19 +267,19 @@ codex_worktree_fingerprint() {
   )
 }
 
-# Classify staged diff into R1 (light UI/test), R2 (standard CRUD/backend), or R3 (critical)
+# Classify staged diff into R1 (light UI/test), R2 (standard CRUD/fullstack), or R3 (critical)
 codex_classify_diff_tier() {
   local files diff_lines
   files=$(codex_staged_files)
   diff_lines=$(codex_staged_diff | grep -cE '^[+-][^+-]' || true)
 
-  if grep -qE '(\.lua$|/V[0-9]+__.*\.sql$|Security|Jwt|Auth|Crypto|Lock|Concurrency|Mutex|Socket|Protocol|Netty|K8s|Dockerfile|docker-compose|setup-git-hooks\.sh|\.agents/scripts/|\.agents/hooks\.json)' <<< "$files" \
+  if grep -qE '(\.lua$|/V[0-9]+__.*\.sql$|SmscConnectionManager|Smpp|RateLimit|RfSegment|RfCapacity|FallbackScheduler|SmsInboundConsumer|SmsOutbound|Ejoin|SecurityConfig|Jwt|Auth|EncryptionService|deploy-k8s|Dockerfile|docker-compose|apisix|update-hetzner-firewall|setup-git-hooks\.sh|\.agents/scripts/|\.agents/hooks\.json)' <<< "$files" \
      || [ "${diff_lines:-0}" -ge 350 ]; then
     echo "R3"
     return 0
   fi
 
-  if [ "${diff_lines:-0}" -lt 60 ] && ! grep -qE '(pom\.xml$|build\.gradle$|pyproject\.toml$|go\.mod$|Cargo\.toml$|\.sh$)' <<< "$files"; then
+  if [ "${diff_lines:-0}" -lt 60 ] && ! grep -qE '(^services/|^shared-libs/|pom\.xml$|\.sh$)' <<< "$files"; then
     echo "R1"
     return 0
   fi
@@ -212,8 +287,8 @@ codex_classify_diff_tier() {
   echo "R2"
 }
 
-codex_is_security_sensitive_files() {
-  grep -qE '(Security|Jwt|Auth|Encryption|Crypto|Secret|Token|Permission|Rbac|Vhost|Firewall|setup-git-hooks\.sh|\.agents/scripts/|\.agents/hooks\.json)' <<< "${1:-}"
+codex_is_security_sensitive_files() {  # $1 = newline-separated file list
+  grep -qE '(SecurityConfig|Jwt|Auth|EncryptionService|apisix|deploy-k8s|Dockerfile|docker-compose|update-hetzner-firewall|setup-git-hooks\.sh|\.agents/scripts/|\.agents/hooks\.json)' <<< "${1:-}"
 }
 
 # -----------------------------------------------------------------------------
@@ -236,15 +311,24 @@ codex_build_context() {
     cat "$f"
   done
   echo
-  echo "### .agents/PROJECT_KNOWLEDGE.md"
-  sed -n '1,/^## 📝 Recent/p' "$root/.agents/PROJECT_KNOWLEDGE.md" 2>/dev/null || cat "$root/.agents/PROJECT_KNOWLEDGE.md" 2>/dev/null || true
+  echo "### .agents/PROJECT_KNOWLEDGE.md (index + operating rules; changelog omitted)"
+  sed -n '1,/^## 📝 Recent Chat Outcomes/p' "$root/.agents/PROJECT_KNOWLEDGE.md" 2>/dev/null | sed '$d'
+  echo
+  echo "Domain knowledge files — read ONLY the 1-2 directly relevant to changed files:"
+  ls -1 "$root"/.agents/knowledge/*.md 2>/dev/null | sed "s|^$root/|- |"
 }
 
 codex_build_compact_ui_context() {
   local root="$CODEX_REPO_ROOT"
-  echo "### UI & Security Rules (Compact R1 Mode)"
-  echo "- Maintain UI consistency: preserve fonts, colors, pill badges, and layout hierarchy."
-  echo "- Security: verify zero XSS (dangerouslySetInnerHTML / unescaped URLs), zero leaked secrets, and clean types."
+  echo "### UI & Security Rules (Compact R1 Mode — Do NOT scan unrelated backend services)"
+  echo "- Preserve UI Design System (.agents/knowledge/ui-design-system.md): never arbitrarily alter fonts, colors, pill badges, table headers, or fill-current on Play/Square icons."
+  echo "- No-Hardcoded-Routing invariant: never hardcode routing/retry/TPS constants in TS/JS."
+  echo "- Security: verify zero XSS (dangerouslySetInnerHTML / unescaped URLs), zero leaked secrets, and clean TypeScript types."
+  if [ -f "$root/.agents/knowledge/ui-design-system.md" ]; then
+    echo
+    echo "### .agents/knowledge/ui-design-system.md (excerpt)"
+    head -n 80 "$root/.agents/knowledge/ui-design-system.md"
+  fi
 }
 
 codex_repo_state() {
@@ -269,24 +353,29 @@ codex_is_rate_limited() {
 }
 
 codex_is_unavailable() {
-  grep -qiE '502|503|504|bad gateway|service unavailable|gateway timeout|cloudflare|unreachable|econnrefused|not logged|unauthorized|invalid api key'
+  grep -qiE '401|unauthori[sz]ed|not logged in|login required|please (log|sign) ?in|token (expired|invalid)|refresh token|authentication|invalid api key|api_key|claude login|credit balance is too low'
 }
 
-codex_log_usage() {
-  local kind="$1" provider_model="$2" effort="$3" status="$4" events_file="$5"
-  local in_tok="0" out_tok="0" cost="0.00"
-  if [ -s "$events_file" ]; then
-    in_tok=$(jq -r -s 'map(select(.type=="turn.completed" or .type=="session.completed") | .usage.input_tokens // 0) | add // 0' "$events_file" 2>/dev/null || echo 0)
-    out_tok=$(jq -r -s 'map(select(.type=="turn.completed" or .type=="session.completed") | .usage.output_tokens // 0) | add // 0' "$events_file" 2>/dev/null || echo 0)
+codex_log_usage() {  # kind provider_model effort status events_file
+  local usage=""
+  if [ -f "${5:-}" ]; then
+    usage=$(jq -c -R 'fromjson? | select(.usage) | .usage' "$5" 2>/dev/null | tail -1 || true)
   fi
-  mkdir -p "$(dirname "$CODEX_USAGE_LOG")"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$kind" "$provider_model" "$effort" "$status" "$in_tok" "$out_tok" "$cost" \
-    >> "$CODEX_USAGE_LOG"
+  [ -z "$usage" ] && usage="{}"
+  mkdir -p "$CODEX_REPORT_DIR"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "$usage" >> "$CODEX_USAGE_LOG"
+}
+
+codex_prune_logs() {
+  local pattern
+  for pattern in '*.events.jsonl' '*.stderr.log' '*.prompt.md'; do
+    # shellcheck disable=SC2012
+    ls -1t "$CODEX_REPORT_DIR"/$pattern 2>/dev/null | tail -n +"$((CODEX_KEEP_RUN_LOGS + 1))" | xargs -r rm -f || true
+  done
 }
 
 # -----------------------------------------------------------------------------
-# Pool B Runners: OpenAI Codex CLI (`codex_run` / `codex_run_resume`, strict read-only)
+# Pool B Runner: OpenAI Codex CLI (`codex_run` & `codex_run_resume`)
 # -----------------------------------------------------------------------------
 codex_run() {
   local kind="$1" model="$2" effort="$3" schema="$4" out="$5" prompt_file="$6"
@@ -306,29 +395,25 @@ codex_run() {
     return 0
   fi
 
-  local -a args=(
-    -C "$CODEX_REPO_ROOT"
-    -s "read-only"
-    -m "$model"
-    -c "model_reasoning_effort=\"${effort}\""
-    -c "features.multi_agent=false"
-    --json
-  )
-  [ -n "$schema" ] && [ -f "$schema" ] && args+=(--output-schema "$schema")
-  [ -n "$out" ] && args+=(-o "$out")
+  local args=(exec -C "$CODEX_REPO_ROOT" -s read-only -m "$model"
+              -c "model_reasoning_effort=\"${effort}\""
+              -c 'features.multi_agent=false'
+              -c 'approval_policy="never"'
+              --json -o "$out")
+  [ -n "$schema" ] && args+=(--output-schema "$schema")
 
   rm -f "$out"
   before=$(codex_worktree_fingerprint)
-  timeout "$CODEX_TIMEOUT_SECS" "$bin" exec "${args[@]}" - < "$prompt_file" > "$CODEX_RUN_EVENTS" 2> "$CODEX_RUN_STDERR" || rc=$?
+  timeout "$CODEX_TIMEOUT_SECS" "$bin" "${args[@]}" - < "$prompt_file" \
+    > "$CODEX_RUN_EVENTS" 2> "$CODEX_RUN_STDERR" || rc=$?
   after=$(codex_worktree_fingerprint)
 
-  CODEX_LAST_THREAD_ID=$(jq -r -R 'fromjson? | select(.type=="session_started" or .type=="thread.created") | (.thread_id // .session_id // empty)' "$CODEX_RUN_EVENTS" 2>/dev/null | tail -1 || true)
+  CODEX_LAST_THREAD_ID=$(jq -r -R 'fromjson? | select(.type=="thread.started") | .thread_id // empty' "$CODEX_RUN_EVENTS" 2>/dev/null | head -1 || true)
   msgs=$(codex_error_messages "$CODEX_RUN_EVENTS" "$CODEX_RUN_STDERR")
 
   if [ "$before" != "$after" ]; then
     CODEX_RUN_STATUS="INTEGRITY_VIOLATION"
-    CODEX_RUN_ERROR="Worktree changed during read-only Codex run"
-    rm -f "$out"
+    CODEX_RUN_ERROR="Worktree changed during Codex run"
   elif [ "$rc" -eq 0 ] && [ -s "$out" ]; then
     CODEX_RUN_STATUS="OK"
   elif [ "$rc" -eq 124 ]; then
@@ -346,10 +431,11 @@ codex_run() {
   fi
 
   codex_log_usage "$kind" "codex:${model}" "$effort" "$CODEX_RUN_STATUS" "$CODEX_RUN_EVENTS"
+  codex_prune_logs
   return 0
 }
 
-codex_run_resume() {
+codex_run_resume() {  # kind thread_id model effort schema out prompt_file
   local kind="$1" thread_id="$2" model="$3" effort="$4" schema="$5" out="$6" prompt_file="$7"
   local ts bin rc=0 before after msgs
   ts=$(date -u +%Y%m%dT%H%M%SZ)
@@ -363,61 +449,30 @@ codex_run_resume() {
   if ! bin=$(codex_resolve_bin); then
     CODEX_RUN_STATUS="UNAVAILABLE"
     CODEX_RUN_ERROR="Codex binary not found"
-    codex_log_usage "$kind" "codex:${model}" "$effort" "$CODEX_RUN_STATUS" "$CODEX_RUN_EVENTS"
     return 0
   fi
 
-  local -a args=(
-    -C "$CODEX_REPO_ROOT"
-    -s "read-only"
-    -m "$model"
-    -c "model_reasoning_effort=\"${effort}\""
-    -c "features.multi_agent=false"
-    --json
-  )
-  [ -n "$schema" ] && [ -f "$schema" ] && args+=(--output-schema "$schema")
+  local args=(exec resume "$thread_id" -s read-only -m "$model"
+              -c "model_reasoning_effort=\"${effort}\""
+              -c 'features.multi_agent=false'
+              -c 'approval_policy="never"'
+              --json -o "$out")
+  [ -n "$schema" ] && args+=(--output-schema "$schema")
 
   rm -f "$out"
   before=$(codex_worktree_fingerprint)
-  timeout "$CODEX_TIMEOUT_SECS" "$bin" exec resume "${args[@]}" "$thread_id" - < "$prompt_file" > "$CODEX_RUN_EVENTS" 2> "$CODEX_RUN_STDERR" || rc=$?
+  (
+    cd "$CODEX_REPO_ROOT"
+    timeout "$CODEX_TIMEOUT_SECS" "$bin" "${args[@]}" - < "$prompt_file" \
+      > "$CODEX_RUN_EVENTS" 2> "$CODEX_RUN_STDERR"
+  ) || rc=$?
   after=$(codex_worktree_fingerprint)
-
-  if [ "$rc" -eq 0 ] && [ -s "$CODEX_RUN_EVENTS" ]; then
-    python3 - "$CODEX_RUN_EVENTS" "$out" <<'PY' || true
-import sys, json
-events_path, out_path = sys.argv[1], sys.argv[2]
-last_json_text = None
-with open(events_path, "r", encoding="utf-8", errors="replace") as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ev = json.loads(line)
-        except Exception:
-            continue
-        if ev.get("type") == "item.completed":
-            item = ev.get("item") or {}
-            parts = item.get("content") or []
-            for p in parts:
-                txt = p.get("text") or ""
-                if "{" in txt and "}" in txt:
-                    last_json_text = txt
-if last_json_text:
-    start = last_json_text.find("{")
-    end = last_json_text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        with open(out_path, "w", encoding="utf-8") as out:
-            out.write(last_json_text[start:end+1] + "\n")
-PY
-  fi
 
   msgs=$(codex_error_messages "$CODEX_RUN_EVENTS" "$CODEX_RUN_STDERR")
 
   if [ "$before" != "$after" ]; then
     CODEX_RUN_STATUS="INTEGRITY_VIOLATION"
-    CODEX_RUN_ERROR="Worktree changed during read-only Codex resume"
-    rm -f "$out"
+    CODEX_RUN_ERROR="Worktree changed during Codex resume run"
   elif [ "$rc" -eq 0 ] && [ -s "$out" ]; then
     CODEX_RUN_STATUS="OK"
   elif [ "$rc" -eq 124 ]; then
@@ -434,14 +489,14 @@ PY
     CODEX_RUN_ERROR="exit=${rc}: $(printf '%s' "$msgs" | head -3 | tr '\n"\\' '   ')"
   fi
 
-  codex_log_usage "$kind" "codex-resume:${model}" "$effort" "$CODEX_RUN_STATUS" "$CODEX_RUN_EVENTS"
+  codex_log_usage "${kind}-resume" "codex:${model}" "$effort" "$CODEX_RUN_STATUS" "$CODEX_RUN_EVENTS"
   return 0
 }
 
 # -----------------------------------------------------------------------------
 # Pool C Runner: Anthropic Claude Code CLI (`claude_run`, strict read-only)
 # -----------------------------------------------------------------------------
-claude_run() {
+claude_run() {  # kind model effort schema_or_empty out prompt_file
   local kind="$1" model="$2" effort="$3" schema="$4" out="$5" prompt_file="$6"
   local ts bin rc=0 before after msgs
   ts=$(date -u +%Y%m%dT%H%M%SZ)
@@ -453,75 +508,76 @@ claude_run() {
 
   if ! bin=$(claude_resolve_bin); then
     CODEX_RUN_STATUS="UNAVAILABLE"
-    CODEX_RUN_ERROR="Claude binary not found"
+    CODEX_RUN_ERROR="Claude CLI binary not found"
     codex_log_usage "$kind" "claude:${model}" "$effort" "$CODEX_RUN_STATUS" "$CODEX_RUN_EVENTS"
     return 0
   fi
 
-  local combined_prompt="${CODEX_REPORT_DIR}/${kind}-claude-${ts}.prompt.md"
-  cp "$prompt_file" "$combined_prompt"
+  local args=(-p --model "$model" --effort "$effort" --permission-mode plan
+              --allowedTools "Read" "Grep" "Glob" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git status:*)"
+              --disallowedTools "Write" "Edit" "MultiEdit" "NotebookEdit"
+              --max-turns 25)
   if [ -n "$schema" ] && [ -f "$schema" ]; then
-    {
-      echo ""
-      echo "# STRICT JSON SCHEMA REQUIREMENT"
-      echo "Output ONLY a raw valid JSON object (no markdown fences, no commentary before or after) strictly conforming to this JSON Schema:"
-      cat "$schema"
-    } >> "$combined_prompt"
+    args+=(--output-format json --json-schema "$(tr -d '\n' < "$schema")")
+  else
+    args+=(--output-format json)
   fi
 
   rm -f "$out"
   before=$(codex_worktree_fingerprint)
   (
     cd "$CODEX_REPO_ROOT"
-    timeout "$CODEX_TIMEOUT_SECS" "$bin" -p \
-      --model "$model" \
-      --effort "$effort" \
-      --permission-mode plan \
-      --allowedTools "Read" "Grep" "Glob" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" "Bash(git status:*)" \
-      --disallowedTools "Write" "Edit" "MultiEdit" "NotebookEdit" \
-      --max-turns 20 \
-      -- < "$combined_prompt" \
+    timeout "$CODEX_TIMEOUT_SECS" "$bin" "${args[@]}" < "$prompt_file" \
       > "$CODEX_RUN_EVENTS" 2> "$CODEX_RUN_STDERR"
   ) || rc=$?
   after=$(codex_worktree_fingerprint)
-  rm -f "$combined_prompt"
 
+  # Extract structured JSON or markdown text from Claude's JSON wrapper
   if [ "$rc" -eq 0 ] && [ -s "$CODEX_RUN_EVENTS" ]; then
-    if [ -n "$schema" ] && [ -f "$schema" ]; then
-      python3 - "$CODEX_RUN_EVENTS" "$out" <<'PY' || true
-import sys, json, re
-events_path, out_path = sys.argv[1], sys.argv[2]
-with open(events_path, "r", encoding="utf-8", errors="replace") as f:
-    text = f.read()
-cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.S).strip()
-start = cleaned.find("{")
-end = cleaned.rfind("}")
-if start != -1 and end != -1 and end > start:
-    try:
-        obj = json.loads(cleaned[start:end+1])
-        with open(out_path, "w", encoding="utf-8") as out:
-            json.dump(obj, out, ensure_ascii=False)
-    except Exception:
-        sys.exit(1)
-else:
-    sys.exit(1)
-PY
+    local is_err
+    is_err=$(jq -r 'if type=="object" then (.is_error // false) else false end' "$CODEX_RUN_EVENTS" 2>/dev/null || echo "false")
+    if [ "$is_err" = "true" ]; then
+      rc=1
+    elif [ -n "$schema" ]; then
+      jq -c 'if .structured_output then .structured_output elif (.result | type == "string") then (.result | fromjson) else . end' \
+        "$CODEX_RUN_EVENTS" > "$out" 2>/dev/null || rm -f "$out"
     else
-      cp "$CODEX_RUN_EVENTS" "$out"
+      jq -r '.result // empty' "$CODEX_RUN_EVENTS" > "$out" 2>/dev/null || rm -f "$out"
     fi
   fi
 
   msgs=$(codex_error_messages "$CODEX_RUN_EVENTS" "$CODEX_RUN_STDERR")
 
+  # 1. Immediate Integrity Verification: If worktree mutated, abort instantly without retry!
   if [ "$before" != "$after" ]; then
     CODEX_RUN_STATUS="INTEGRITY_VIOLATION"
-    CODEX_RUN_ERROR="Worktree changed during read-only Claude run"
+    CODEX_RUN_ERROR="Worktree changed during Claude CLI run"
     rm -f "$out"
-  elif [ "$rc" -eq 0 ] && [ -s "$out" ]; then
+    codex_log_usage "$kind" "claude:${model}" "$effort" "$CODEX_RUN_STATUS" "$CODEX_RUN_EVENTS"
+    return 0
+  fi
+
+  # 2. Check if model was rejected by Claude CLI version and fallback is available (only on clean worktree)
+  if [ "$rc" -ne 0 ] && printf '%s' "$msgs" | grep -qiE '(unknown model|invalid model|model.*not found|model.*not supported|valid models are)'; then
+    local fallback_model=""
+    case "$model" in
+      *sonnet*) fallback_model="sonnet" ;;
+      *opus*)   fallback_model="opus" ;;
+      *haiku*)  fallback_model="haiku" ;;
+    esac
+    if [ -n "$fallback_model" ] && [ "$fallback_model" != "$model" ]; then
+      echo "ℹ️  Claude CLI rejected model '${model}'; retrying with fallback model '${fallback_model}'..." >&2
+      codex_log_usage "$kind" "claude:${model}" "$effort" "MODEL_FALLBACK" "$CODEX_RUN_EVENTS"
+      claude_run "$kind" "$fallback_model" "$effort" "$schema" "$out" "$prompt_file"
+      return $?
+    fi
+  fi
+
+  if [ "$rc" -eq 0 ] && [ -s "$out" ]; then
     CODEX_RUN_STATUS="OK"
   elif [ "$rc" -eq 124 ]; then
     CODEX_RUN_STATUS="TIMEOUT"
-    CODEX_RUN_ERROR="Claude exceeded ${CODEX_TIMEOUT_SECS}s"
+    CODEX_RUN_ERROR="Claude CLI exceeded ${CODEX_TIMEOUT_SECS}s"
   elif printf '%s\n' "$msgs" | codex_is_rate_limited; then
     CODEX_RUN_STATUS="RATE_LIMITED"
     CODEX_RUN_ERROR=$(printf '%s' "$msgs" | head -3 | tr '\n"\\' '   ')
@@ -540,7 +596,7 @@ PY
 # -----------------------------------------------------------------------------
 # Pool D Runner: OpenCode CLI + DeepSeek API (`opencode_run`, strict read-only)
 # -----------------------------------------------------------------------------
-opencode_run() {
+opencode_run() {  # kind model schema_or_empty out prompt_file [require_paid_key: 0|1]
   local kind="$1" model="$2" schema="$3" out="$4" prompt_file="$5" req_paid="${6:-1}"
   local ts bin rc=0 before after msgs
   ts=$(date -u +%Y%m%dT%H%M%SZ)
@@ -560,7 +616,7 @@ opencode_run() {
   if ! llm_load_deepseek_key; then
     if [ "$req_paid" -eq 1 ]; then
       CODEX_RUN_STATUS="UNAVAILABLE"
-      CODEX_RUN_ERROR="DEEPSEEK_API_KEY not configured yet in ~/.config/llm-council/secrets.env"
+      CODEX_RUN_ERROR="DEEPSEEK_API_KEY not configured yet (run set-deepseek-key)"
       codex_log_usage "$kind" "opencode:${model}" "default" "$CODEX_RUN_STATUS" "$CODEX_RUN_EVENTS"
       return 0
     fi
@@ -618,6 +674,7 @@ if not full:
     sys.exit(1)
 
 if schema_path:
+    # Strip markdown code fences if present and extract outermost JSON object
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", full, flags=re.S).strip()
     start = cleaned.find("{")
     end = cleaned.rfind("}")

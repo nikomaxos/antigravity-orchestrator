@@ -7,14 +7,14 @@
 # preserving Pool A (`Gemini 4 Carbon`) quota for orchestration & final fallback.
 #
 # Tier Cascades:
-#   --tier ui      (T2 Frontend/UI/Tests):
-#       Pool C (Claude Sonnet 4.6 med) -> Pool B (Codex gpt-5.6-terra med) -> Pool D (DeepSeek-V4-Pro)
-#   --tier backend (T3 Multi-Service/Backend/CRUD/Migrations):
-#       Pool B (Codex gpt-6-astra high) -> Pool C (Claude Sonnet 4.6 high) -> Pool D (DeepSeek-V4-Pro)
-#   --tier deep    (T4 Critical Architecture/Concurrency/Protocols/Security):
-#       Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Opus 4.6 high) -> Pool D (DeepSeek-V4-Pro)
+#   --tier ui      (T2 React/TS/UI/Tests):
+#       Pool C (Claude Sonnet 5.5 med) -> Pool B (Codex gpt-6.1-terra med) -> Pool D (DeepSeek-V4-Pro)
+#   --tier backend (T3 Multi-Service/CRUD/Flyway):
+#       Pool B (Codex gpt-6.1-sol high) -> Pool C (Claude Sonnet 5.5 high) -> Pool D (DeepSeek-V4-Pro)
+#   --tier deep    (T4 Concurrency/SMPP/Hardware/Security/Architecture):
+#       Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Opus 5.5 high) -> Pool D (DeepSeek-V4-Pro)
 #   --tier flash   (T1 Log/Repo Scan):
-#       Pool D (DeepSeek-Flash -> DeepSeek-V4-Pro -> Free Flash fallback)
+#       Pool D (DeepSeek-Flash -> DeepSeek-V4-Pro) -> Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna low)
 #
 # Exit Codes:
 #   0 — External frontier pool succeeded (response printed to stdout & saved to .agent-reports/codex/frontier-latest.md)
@@ -23,8 +23,8 @@
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
+export HOME="${HOME:-/home/nick}"
+export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=codex-lib.sh
@@ -42,10 +42,10 @@ Usage:
 
 Options:
   --tier <ui|backend|deep|flash>  Task tier routing cascade (default: backend):
-                                    - ui      (T2): Pool C (Claude Sonnet 4.6) -> Pool B (Codex gpt-5.6-terra medium) -> Pool D (DeepSeek-V4-Pro)
-                                    - backend (T3): Pool B (Codex gpt-6-astra high) -> Pool C (Claude Sonnet 4.6) -> Pool D (DeepSeek-V4-Pro)
-                                    - deep    (T4): Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Opus 4.6 high) -> Pool D (DeepSeek-V4-Pro)
-                                    - flash   (T1): Pool D (DeepSeek-Flash / DeepSeek-V4-Pro)
+                                    - ui      (T2): Pool C (Claude Sonnet 5.5) -> Pool B (Codex gpt-6.1-terra medium) -> Pool D (DeepSeek-V4-Pro)
+                                    - backend (T3): Pool B (Codex gpt-6.1-sol high) -> Pool C (Claude Sonnet 5.5) -> Pool D (DeepSeek-V4-Pro)
+                                    - deep    (T4): Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Opus 5.5 high) -> Pool D (DeepSeek-V4-Pro)
+                                    - flash   (T1): Pool D (DeepSeek-Flash / DeepSeek-V4-Pro) -> Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna low)
   -p, --prompt "<text>"           Task prompt (can also be passed as positional args or via stdin)
   -f, -a, --file <path>           Attach repo-local file content into the prompt context (repeatable)
   -h, --help                      Show this help message and exit 0
@@ -61,15 +61,8 @@ validate_attach_file() {
   local raw_path="$1" resolved=""
   [ -f "$raw_path" ] || { echo "ERROR: Attached file not found: '${raw_path}'" >&2; exit 1; }
   resolved=$(realpath "$raw_path" 2>/dev/null || echo "")
-  if command -v cygpath >/dev/null 2>&1; then
-    resolved="$(cygpath -m "$resolved" 2>/dev/null || echo "$resolved")"
-  fi
-  local root_check="$CODEX_REPO_ROOT"
-  if command -v cygpath >/dev/null 2>&1; then
-    root_check="$(cygpath -m "$root_check" 2>/dev/null || echo "$root_check")"
-  fi
-  if [[ "$resolved" != "${root_check}/"* ]] && [[ "$resolved" != "$root_check" ]]; then
-    echo "ERROR: Attached file must reside inside ${root_check} (got '${resolved}')" >&2
+  if [[ "$resolved" != "${CODEX_REPO_ROOT}/"* ]]; then
+    echo "ERROR: Attached file must reside inside ${CODEX_REPO_ROOT} (got '${resolved}')" >&2
     exit 1
   fi
   if echo "$resolved" | grep -qiE '(/\.git/|/\.env|secret|\.key$|\.pem$|id_rsa)'; then
@@ -156,8 +149,8 @@ trap 'rm -f "${PROMPT_FILE:-}"' EXIT
 # SINGLE-WRITER READ-ONLY FRONTIER MANDATE
 You are running as an external Frontier Architect & Patch Designer inside a kernel-enforced READ-ONLY sandbox.
 Antigravity (Pool A) is the single writer and will apply your changes and execute tests.
-1. Inspect ONLY the directly relevant files.
-2. Respect all workspace invariants in `AGENTS.md`.
+1. Inspect ONLY the directly relevant files (do not scan unrelated microservices).
+2. Respect all workspace invariants in `AGENTS.md` (No-Hardcoded-Routing, `String.format(Locale.US, ...)`, no `java.sql.Timestamp` in native queries, and `.agents/knowledge/ui-design-system.md` for Admin Panel UI).
 3. Produce a concise, actionable response in Greek (Ελληνικά) containing:
    - Root cause or architectural design summary
    - Exact unified diff (`git diff` / replacement blocks) with file paths and line numbers
@@ -181,6 +174,7 @@ EOF
   fi
 } > "$PROMPT_FILE"
 
+# Delegate cooldown check to shared codex_pool_in_cooldown in codex-lib.sh
 pool_in_cooldown() {
   codex_pool_in_cooldown "$1" "${COOLDOWN_SECS:-900}"
 }
@@ -231,42 +225,116 @@ try_pool_d_deepseek() {
   return 1
 }
 
+# Load dynamic tier settings from model-routing.json if available
+CFG_FILE="${MODEL_ROUTING_FILE:-${HOME}/.gemini/config/model-routing.json}"
+[ ! -f "$CFG_FILE" ] && [ -f "${CODEX_REPO_ROOT}/.agents/config/model-routing.json" ] && CFG_FILE="${CODEX_REPO_ROOT}/.agents/config/model-routing.json"
+
+TIER_UI_C_MODEL="claude-sonnet-5-5"
+TIER_UI_C_EFFORT="medium"
+TIER_UI_B_MODEL="gpt-6.1-terra"
+TIER_UI_B_FALLBACK="gpt-6.1-sol"
+TIER_UI_B_EFFORT="medium"
+
+TIER_BACKEND_B_MODEL="gpt-6.1-sol"
+TIER_BACKEND_B_FALLBACK="gpt-6-astra"
+TIER_BACKEND_B_EFFORT="high"
+TIER_BACKEND_C_MODEL="claude-sonnet-5-5"
+TIER_BACKEND_C_EFFORT="high"
+
+TIER_DEEP_B_MODEL="gpt-6-astra"
+TIER_DEEP_B_FALLBACK="gpt-6.1-sol"
+TIER_DEEP_B_EFFORT="xhigh"
+TIER_DEEP_C_MODEL="claude-opus-5-5"
+TIER_DEEP_C_FALLBACK="claude-sonnet-5-5"
+TIER_DEEP_C_FALLBACK_EFFORT="high"
+TIER_DEEP_C_EFFORT="high"
+
+TIER_FLASH_B_MODEL="gpt-6-luna"
+TIER_FLASH_B_FALLBACK="gpt-reserve"
+TIER_FLASH_B_EFFORT="low"
+TIER_FLASH_C_MODEL="claude-sonnet-5-5"
+TIER_FLASH_C_EFFORT="low"
+
+if [ -f "$CFG_FILE" ] && command -v jq >/dev/null 2>&1; then
+  TIER_UI_C_MODEL=$(jq -r '.pools.pool_c.models.t2_ui.primary // "claude-sonnet-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_UI_C_MODEL")
+  TIER_UI_C_EFFORT=$(jq -r '.pools.pool_c.models.t2_ui.primary_effort // "medium"' "$CFG_FILE" 2>/dev/null || echo "$TIER_UI_C_EFFORT")
+  TIER_UI_B_MODEL=$(jq -r '.pools.pool_b.models.t2_ui.primary // "gpt-6.1-terra"' "$CFG_FILE" 2>/dev/null || echo "$TIER_UI_B_MODEL")
+  TIER_UI_B_FALLBACK=$(jq -r '.pools.pool_b.models.t2_ui.fallback // "gpt-6.1-sol"' "$CFG_FILE" 2>/dev/null || echo "$TIER_UI_B_FALLBACK")
+  TIER_UI_B_EFFORT=$(jq -r '.pools.pool_b.models.t2_ui.primary_effort // "medium"' "$CFG_FILE" 2>/dev/null || echo "$TIER_UI_B_EFFORT")
+
+  TIER_BACKEND_B_MODEL=$(jq -r '.pools.pool_b.models.t3_backend.primary // "gpt-6.1-sol"' "$CFG_FILE" 2>/dev/null || echo "$TIER_BACKEND_B_MODEL")
+  TIER_BACKEND_B_FALLBACK=$(jq -r '.pools.pool_b.models.t3_backend.fallback // "gpt-6-astra"' "$CFG_FILE" 2>/dev/null || echo "$TIER_BACKEND_B_FALLBACK")
+  TIER_BACKEND_B_EFFORT=$(jq -r '.pools.pool_b.models.t3_backend.primary_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "$TIER_BACKEND_B_EFFORT")
+  TIER_BACKEND_C_MODEL=$(jq -r '.pools.pool_c.models.t3_backend.primary // "claude-sonnet-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_BACKEND_C_MODEL")
+  TIER_BACKEND_C_EFFORT=$(jq -r '.pools.pool_c.models.t3_backend.primary_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "$TIER_BACKEND_C_EFFORT")
+
+  TIER_DEEP_B_MODEL=$(jq -r '.pools.pool_b.models.t4_deep.primary // "gpt-6-astra"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_B_MODEL")
+  TIER_DEEP_B_FALLBACK=$(jq -r '.pools.pool_b.models.t4_deep.fallback // "gpt-6.1-sol"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_B_FALLBACK")
+  TIER_DEEP_B_EFFORT=$(jq -r '.pools.pool_b.models.t4_deep.primary_effort // "xhigh"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_B_EFFORT")
+  TIER_DEEP_C_MODEL=$(jq -r '.pools.pool_c.models.t4_deep.primary // "claude-opus-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_C_MODEL")
+  TIER_DEEP_C_FALLBACK=$(jq -r '.pools.pool_c.models.t4_deep.secondary_fallback // .pools.pool_c.models.t4_deep.fallback // "claude-sonnet-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_C_FALLBACK")
+  TIER_DEEP_C_FALLBACK_EFFORT=$(jq -r '.pools.pool_c.models.t4_deep.secondary_fallback_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "high")
+  TIER_DEEP_C_EFFORT=$(jq -r '.pools.pool_c.models.t4_deep.primary_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_C_EFFORT")
+
+  TIER_FLASH_B_MODEL=$(jq -r '.pools.pool_b.models.t1_reserve.primary // "gpt-6-luna"' "$CFG_FILE" 2>/dev/null || echo "$TIER_FLASH_B_MODEL")
+  TIER_FLASH_B_FALLBACK=$(jq -r '.pools.pool_b.models.t1_reserve.fallback // "gpt-reserve"' "$CFG_FILE" 2>/dev/null || echo "$TIER_FLASH_B_FALLBACK")
+  TIER_FLASH_B_EFFORT=$(jq -r '.pools.pool_b.models.t1_reserve.primary_effort // "low"' "$CFG_FILE" 2>/dev/null || echo "$TIER_FLASH_B_EFFORT")
+  TIER_FLASH_C_MODEL=$(jq -r '.pools.pool_c.models.t1_reserve.primary // "claude-sonnet-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_FLASH_C_MODEL")
+  TIER_FLASH_C_EFFORT=$(jq -r '.pools.pool_c.models.t1_reserve.primary_effort // "low"' "$CFG_FILE" 2>/dev/null || echo "$TIER_FLASH_C_EFFORT")
+fi
+
 SUCCEEDED=0
 
 case "$TIER" in
   ui)
-    if try_pool_c_claude "sonnet" "medium" "Claude Sonnet 4.6 (Medium)"; then
+    # Cascade: Pool C (Claude Sonnet 5.5) -> Pool B (Codex gpt-6.1-terra / sol) -> Pool D (DeepSeek-V4-Pro)
+    if try_pool_c_claude "$TIER_UI_C_MODEL" "$TIER_UI_C_EFFORT" "Claude ${TIER_UI_C_MODEL} (${TIER_UI_C_EFFORT})"; then
       SUCCEEDED=1
-    elif try_pool_b_codex "gpt-5.6-terra" "medium" "Codex gpt-5.6-terra (Medium)"; then
+    elif try_pool_b_codex "$TIER_UI_B_MODEL" "$TIER_UI_B_EFFORT" "Codex ${TIER_UI_B_MODEL} (${TIER_UI_B_EFFORT})"; then
+      SUCCEEDED=1
+    elif [ -n "$TIER_UI_B_FALLBACK" ] && try_pool_b_codex "$TIER_UI_B_FALLBACK" "$TIER_UI_B_EFFORT" "Codex ${TIER_UI_B_FALLBACK} (${TIER_UI_B_EFFORT})"; then
       SUCCEEDED=1
     elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
       SUCCEEDED=1
     fi
     ;;
   backend)
-    if try_pool_b_codex "gpt-6-astra" "high" "Codex gpt-6-astra (High)"; then
+    # Cascade: Pool B (Codex gpt-6.1-sol / astra) -> Pool C (Claude Sonnet 5.5) -> Pool D (DeepSeek-V4-Pro)
+    if try_pool_b_codex "$TIER_BACKEND_B_MODEL" "$TIER_BACKEND_B_EFFORT" "Codex ${TIER_BACKEND_B_MODEL} (${TIER_BACKEND_B_EFFORT})"; then
       SUCCEEDED=1
-    elif try_pool_c_claude "sonnet" "high" "Claude Sonnet 4.6 (High)"; then
+    elif [ -n "$TIER_BACKEND_B_FALLBACK" ] && try_pool_b_codex "$TIER_BACKEND_B_FALLBACK" "$TIER_BACKEND_B_EFFORT" "Codex ${TIER_BACKEND_B_FALLBACK} (${TIER_BACKEND_B_EFFORT})"; then
+      SUCCEEDED=1
+    elif try_pool_c_claude "$TIER_BACKEND_C_MODEL" "$TIER_BACKEND_C_EFFORT" "Claude ${TIER_BACKEND_C_MODEL} (${TIER_BACKEND_C_EFFORT})"; then
       SUCCEEDED=1
     elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
       SUCCEEDED=1
     fi
     ;;
   deep)
-    if try_pool_b_codex "gpt-6-astra" "xhigh" "Codex gpt-6-astra (xhigh)"; then
+    # Cascade: Pool B (Codex gpt-6-astra / sol) -> Pool C (Claude Opus 5.5 / sonnet) -> Pool D (DeepSeek-V4-Pro)
+    if try_pool_b_codex "$TIER_DEEP_B_MODEL" "$TIER_DEEP_B_EFFORT" "Codex ${TIER_DEEP_B_MODEL} (${TIER_DEEP_B_EFFORT})"; then
       SUCCEEDED=1
-    elif try_pool_c_claude "opus" "high" "Claude Opus 4.6 (High)"; then
+    elif [ -n "$TIER_DEEP_B_FALLBACK" ] && try_pool_b_codex "$TIER_DEEP_B_FALLBACK" "$TIER_DEEP_B_EFFORT" "Codex ${TIER_DEEP_B_FALLBACK} (${TIER_DEEP_B_EFFORT})"; then
       SUCCEEDED=1
-    elif try_pool_c_claude "sonnet" "high" "Claude Sonnet 4.6 (High)"; then
+    elif try_pool_c_claude "$TIER_DEEP_C_MODEL" "$TIER_DEEP_C_EFFORT" "Claude ${TIER_DEEP_C_MODEL} (${TIER_DEEP_C_EFFORT})"; then
+      SUCCEEDED=1
+    elif [ -n "$TIER_DEEP_C_FALLBACK" ] && try_pool_c_claude "$TIER_DEEP_C_FALLBACK" "$TIER_DEEP_C_FALLBACK_EFFORT" "Claude ${TIER_DEEP_C_FALLBACK} (${TIER_DEEP_C_FALLBACK_EFFORT})"; then
       SUCCEEDED=1
     elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
       SUCCEEDED=1
     fi
     ;;
-  flash|t1)
+  flash)
+    # Cascade (T1 / Zero-Gemini Flash Replacement): Pool D (DeepSeek-Flash -> DeepSeek-V4-Pro) -> Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna / reserve low)
     if try_pool_d_deepseek "$OPENCODE_FLASH_MODEL" 0 "DeepSeek-Flash"; then
       SUCCEEDED=1
     elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
+      SUCCEEDED=1
+    elif try_pool_c_claude "$TIER_FLASH_C_MODEL" "$TIER_FLASH_C_EFFORT" "Claude ${TIER_FLASH_C_MODEL} (${TIER_FLASH_C_EFFORT})"; then
+      SUCCEEDED=1
+    elif try_pool_b_codex "$TIER_FLASH_B_MODEL" "$TIER_FLASH_B_EFFORT" "Codex ${TIER_FLASH_B_MODEL} (${TIER_FLASH_B_EFFORT})"; then
+      SUCCEEDED=1
+    elif [ -n "$TIER_FLASH_B_FALLBACK" ] && try_pool_b_codex "$TIER_FLASH_B_FALLBACK" "$TIER_FLASH_B_EFFORT" "Codex ${TIER_FLASH_B_FALLBACK} (${TIER_FLASH_B_EFFORT})"; then
       SUCCEEDED=1
     fi
     ;;

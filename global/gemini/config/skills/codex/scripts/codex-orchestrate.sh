@@ -2,17 +2,15 @@
 # =============================================================================
 # Codex CLI Tier-Aware Dispatcher (`codex-orchestrate.sh`)
 # =============================================================================
-# Tier routing (`--tier ui|backend|deep`):
-#   - ui      -> gpt-5.6-terra (effort=medium, multi_agent=false)
-#   - backend -> gpt-6-astra   (effort=high,   multi_agent=false) [DEFAULT]
-#   - deep    -> gpt-6-astra   (effort=xhigh,  bounded max 2 subagents)
-# Single-Writer Workspace Safety: if `<workdir>/.agents/hooks.json` exists,
-# unconditionally runs in `-s read-only` Patch/Plan Producer mode.
+# Improvements over v1 (2026-11-05):
+#   1. Tier routing (`--tier ui|backend|deep`):
+#      - ui      -> gpt-5.6-terra (effort=medium, multi_agent=false)
+#      - backend -> gpt-6-astra   (effort=high,   multi_agent=false) [DEFAULT]
+#      - deep    -> gpt-6-astra   (effort=xhigh,  bounded max 2 subagents)
+#   2. Single-Writer Workspace Safety: if `<workdir>/.agents/hooks.json` exists,
+#      unconditionally runs in `-s read-only` Patch/Plan Producer mode.
 # =============================================================================
 set -euo pipefail
-
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 CODEX_TIER="${CODEX_TIER:-backend}"
 CODEX_MODEL="${CODEX_MODEL:-}"
@@ -30,11 +28,8 @@ codex_resolve_bin() {
   if [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN}" ]; then
     echo "${CODEX_BIN}"; return 0
   fi
-  if [ -x "${HOME}/.local/share/mise/shims/codex" ]; then
-    echo "${HOME}/.local/share/mise/shims/codex"; return 0
-  fi
-  if [ -x "${HOME}/.npm-global/bin/codex" ]; then
-    echo "${HOME}/.npm-global/bin/codex"; return 0
+  if [ -x "/home/nick/.npm-global/bin/codex" ]; then
+    echo "/home/nick/.npm-global/bin/codex"; return 0
   fi
   if command -v codex >/dev/null 2>&1; then
     command -v codex; return 0
@@ -118,24 +113,47 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+CFG_FILE="${MODEL_ROUTING_FILE:-${HOME}/.gemini/config/model-routing.json}"
+[ ! -f "$CFG_FILE" ] && [ -f "${CODEX_WORKDIR}/.agents/config/model-routing.json" ] && CFG_FILE="${CODEX_WORKDIR}/.agents/config/model-routing.json"
+if [ -f "$CFG_FILE" ] && command -v jq >/dev/null 2>&1; then
+  DEFAULT_UI_MODEL=$(jq -r '.pools.pool_b.models.t2_ui.primary // "gpt-6.1-terra"' "$CFG_FILE" 2>/dev/null || echo "gpt-6.1-terra")
+  DEFAULT_UI_EFFORT=$(jq -r '.pools.pool_b.models.t2_ui.primary_effort // "medium"' "$CFG_FILE" 2>/dev/null || echo "medium")
+  DEFAULT_BACKEND_MODEL=$(jq -r '.pools.pool_b.models.t3_backend.primary // "gpt-6.1-sol"' "$CFG_FILE" 2>/dev/null || echo "gpt-6.1-sol")
+  DEFAULT_BACKEND_EFFORT=$(jq -r '.pools.pool_b.models.t3_backend.primary_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "high")
+  DEFAULT_DEEP_MODEL=$(jq -r '.pools.pool_b.models.t4_deep.primary // "gpt-6-astra"' "$CFG_FILE" 2>/dev/null || echo "gpt-6-astra")
+  DEFAULT_DEEP_EFFORT=$(jq -r '.pools.pool_b.models.t4_deep.primary_effort // "xhigh"' "$CFG_FILE" 2>/dev/null || echo "xhigh")
+  DEFAULT_FLASH_MODEL=$(jq -r '.pools.pool_b.models.t1_reserve.primary // "gpt-6-luna"' "$CFG_FILE" 2>/dev/null || echo "gpt-6-luna")
+  DEFAULT_FLASH_EFFORT=$(jq -r '.pools.pool_b.models.t1_reserve.primary_effort // "low"' "$CFG_FILE" 2>/dev/null || echo "low")
+else
+  DEFAULT_UI_MODEL="gpt-6.1-terra"; DEFAULT_UI_EFFORT="medium"
+  DEFAULT_BACKEND_MODEL="gpt-6.1-sol"; DEFAULT_BACKEND_EFFORT="high"
+  DEFAULT_DEEP_MODEL="gpt-6-astra"; DEFAULT_DEEP_EFFORT="xhigh"
+  DEFAULT_FLASH_MODEL="gpt-6-luna"; DEFAULT_FLASH_EFFORT="low"
+fi
+
 case "$CODEX_TIER" in
-  ui|t1|t2)
-    : "${CODEX_MODEL:=gpt-5.6-terra}"
-    : "${CODEX_EFFORT:=medium}"
+  flash|fast|t1)
+    : "${CODEX_MODEL:=$DEFAULT_FLASH_MODEL}"
+    : "${CODEX_EFFORT:=$DEFAULT_FLASH_EFFORT}"
+    CODEX_MULTI_AGENT="false"
+    ;;
+  ui|t2)
+    : "${CODEX_MODEL:=$DEFAULT_UI_MODEL}"
+    : "${CODEX_EFFORT:=$DEFAULT_UI_EFFORT}"
     CODEX_MULTI_AGENT="false"
     ;;
   backend|t3)
-    : "${CODEX_MODEL:=gpt-6-astra}"
-    : "${CODEX_EFFORT:=high}"
+    : "${CODEX_MODEL:=$DEFAULT_BACKEND_MODEL}"
+    : "${CODEX_EFFORT:=$DEFAULT_BACKEND_EFFORT}"
     CODEX_MULTI_AGENT="false"
     ;;
   deep|t4)
-    : "${CODEX_MODEL:=gpt-6-astra}"
-    : "${CODEX_EFFORT:=xhigh}"
+    : "${CODEX_MODEL:=$DEFAULT_DEEP_MODEL}"
+    : "${CODEX_EFFORT:=$DEFAULT_DEEP_EFFORT}"
     CODEX_MULTI_AGENT="true"
     ;;
   *)
-    echo "ERROR: Invalid --tier '$CODEX_TIER' (must be ui, backend, or deep)" >&2
+    echo "ERROR: Invalid --tier '$CODEX_TIER' (must be flash, ui, backend, or deep)" >&2
     exit 1
     ;;
 esac
@@ -204,90 +222,90 @@ Do NOT attempt to write, edit, or delete any files (Antigravity is the single wr
 MANDATE_RO_EOF
   cat "$USER_PROMPT_FILE" >> "$TMP_PROMPT"
 else
-  cat "$USER_PROMPT_FILE" > "$TMP_PROMPT"
+  cat > "$TMP_PROMPT" <<MANDATE_RW_EOF
+<autonomous_execution_mandate>
+You are executing a Tier='${CODEX_TIER}' task (Model=${CODEX_MODEL}, Effort=${CODEX_EFFORT}).
+1. Inspect relevant files efficiently without redundant whole-repo scans.
+2. Design and implement clean, surgical changes.
+3. Sub-agents: $( [ "$CODEX_MULTI_AGENT" = "true" ] && echo "Allowed ONLY if strictly helpful (MAX 2 sub-agents)." || echo "DISABLED — execute directly in this single thread to conserve quota." )
+4. Run targeted builds/tests and inspect \`git diff\` before concluding.
+5. Write your final summary in Greek (Ελληνικά).
+</autonomous_execution_mandate>
+
+## User Request
+MANDATE_RW_EOF
+  cat "$USER_PROMPT_FILE" >> "$TMP_PROMPT"
 fi
 
-BIN=$(codex_resolve_bin) || {
-  echo "ERROR: Codex CLI not found. Install Codex CLI or check ~/.npm-global/bin/codex" >&2
-  exit 2
-}
+BIN=$(codex_resolve_bin) || { echo "ERROR: codex binary not found" >&2; exit 2; }
+: > "$EVENTS_FILE"; : > "$STDERR_FILE"; rm -f "$OUT_FILE"
 
-SANDBOX_MODE="read-only"
-[ "$SINGLE_WRITER_PROTECTED" -eq 0 ] && SANDBOX_MODE="workspace-write"
-
-echo ">>> [Codex Dispatcher] Mode=${cmd} | Tier=${CODEX_TIER} | Model=${CODEX_MODEL} | Effort=${CODEX_EFFORT} | MultiAgent=${CODEX_MULTI_AGENT} | Sandbox=${SANDBOX_MODE}"
-
-RUN_ARGS=(
-  -C "$CODEX_WORKDIR"
-  -s "$SANDBOX_MODE"
-  -m "$CODEX_MODEL"
-  -c "model_reasoning_effort=\"${CODEX_EFFORT}\""
-  -c "features.multi_agent=${CODEX_MULTI_AGENT}"
-  --json
-)
-
-[ "$cmd" = "run" ] && RUN_ARGS+=(-o "$OUT_FILE")
-
-CMD_EXEC=("$BIN" exec "${RUN_ARGS[@]}")
-if [ "$cmd" = "resume" ]; then
-  CMD_EXEC=("$BIN" exec resume "${RUN_ARGS[@]}" "$SESSION_TARGET" -)
+SANDBOX_ARGS=()
+if [ "$SINGLE_WRITER_PROTECTED" -eq 1 ]; then
+  SANDBOX_ARGS=(-s read-only)
 else
-  CMD_EXEC+=(-)
+  SANDBOX_ARGS=(-c 'sandbox_mode="workspace-write"')
 fi
 
-set +e
-timeout "$CODEX_TIMEOUT_SECS" "${CMD_EXEC[@]}" < "$TMP_PROMPT" > "$EVENTS_FILE" 2> "$STDERR_FILE"
-EXIT_CODE=$?
-set -e
+echo ">>> [Codex Dispatcher] Mode=${cmd} | Tier=${CODEX_TIER} | Model=${CODEX_MODEL} | Effort=${CODEX_EFFORT} | MultiAgent=${CODEX_MULTI_AGENT} | ProtectedRO=${SINGLE_WRITER_PROTECTED}"
 
-rm -f "$TMP_PROMPT"
-
-SESSION_ID=""
-if [ -s "$EVENTS_FILE" ]; then
-  SESSION_ID=$(jq -r -R 'fromjson? | select(.type=="session_started") | .session_id' "$EVENTS_FILE" 2>/dev/null | tail -1 || true)
-  if [ -n "$SESSION_ID" ]; then
-    echo "$SESSION_ID" > "${STATE_ROOT}/${wkey}.session_id"
-    {
-      echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      echo "Tier: ${CODEX_TIER}"
-      echo "Model: ${CODEX_MODEL}"
-      echo "Effort: ${CODEX_EFFORT}"
-      echo "Last Events: ${EVENTS_FILE}"
-    } > "${STATE_ROOT}/${wkey}.last_meta"
-  fi
+rc=0
+if [ "$cmd" = "run" ]; then
+  timeout "$CODEX_TIMEOUT_SECS" "$BIN" exec \
+    -C "$CODEX_WORKDIR" \
+    "${SANDBOX_ARGS[@]}" \
+    -m "$CODEX_MODEL" \
+    -c "model_reasoning_effort=\"${CODEX_EFFORT}\"" \
+    -c "features.multi_agent=${CODEX_MULTI_AGENT}" \
+    -c 'approval_policy="never"' \
+    --skip-git-repo-check \
+    --json \
+    -o "$OUT_FILE" \
+    - < "$TMP_PROMPT" > "$EVENTS_FILE" 2> "$STDERR_FILE" || rc=$?
+else
+  (
+    cd "$CODEX_WORKDIR"
+    timeout "$CODEX_TIMEOUT_SECS" "$BIN" exec resume "$SESSION_TARGET" \
+      "${SANDBOX_ARGS[@]}" \
+      -m "$CODEX_MODEL" \
+      -c "model_reasoning_effort=\"${CODEX_EFFORT}\"" \
+      -c "features.multi_agent=${CODEX_MULTI_AGENT}" \
+      -c 'approval_policy="never"' \
+      --skip-git-repo-check \
+      --json \
+      -o "$OUT_FILE" \
+      - < "$TMP_PROMPT" > "$EVENTS_FILE" 2> "$STDERR_FILE"
+  ) || rc=$?
 fi
 
+SESSION_ID=$(jq -r -R 'fromjson? | select(.type=="thread.started") | .thread_id // empty' "$EVENTS_FILE" 2>/dev/null | head -1 || true)
+if [ -n "$SESSION_ID" ]; then
+  echo "$SESSION_ID" > "${STATE_ROOT}/${wkey}.session_id"
+elif [ -f "${STATE_ROOT}/${wkey}.session_id" ]; then
+  SESSION_ID=$(cat "${STATE_ROOT}/${wkey}.session_id")
+fi
+
+USAGE=$(jq -c -R 'fromjson? | select(.usage) | .usage' "$EVENTS_FILE" 2>/dev/null | tail -1 || true)
+[ -z "$USAGE" ] && USAGE="{}"
+
+cat > "${STATE_ROOT}/${wkey}.last_meta" <<EOF
+Last Run Timestamp: ${ts}
+Last Mode: ${cmd} (tier=${CODEX_TIER}, protected_ro=${SINGLE_WRITER_PROTECTED})
+Last Model: ${CODEX_MODEL} (effort=${CODEX_EFFORT}, multi_agent=${CODEX_MULTI_AGENT})
+Last Exit Code: ${rc}
+Last Usage: ${USAGE}
+Last Output File: ${OUT_FILE}
+EOF
+
+echo ">>> [Codex Dispatcher] Session=${SESSION_ID:-unknown} | Exit=${rc} | Usage=${USAGE}"
 if [ -s "$OUT_FILE" ]; then
+  echo "==================== CODEX FINAL REPORT ===================="
   cat "$OUT_FILE"
-elif [ -s "$EVENTS_FILE" ]; then
-  python3 - "$EVENTS_FILE" <<'PY' || true
-import sys, json
-path = sys.argv[1]
-last_text = None
-with open(path, "r", encoding="utf-8", errors="replace") as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            ev = json.loads(line)
-        except Exception:
-            continue
-        if ev.get("type") == "item.completed":
-            item = ev.get("item") or {}
-            if item.get("type") == "message" and item.get("role") == "assistant":
-                parts = item.get("content") or []
-                for p in parts:
-                    if p.get("type") == "text" and p.get("text"):
-                        last_text = p["text"]
-if last_text:
-    print(last_text)
-PY
+  echo ""
+  echo "============================================================"
+else
+  echo ">>> [Codex Dispatcher] WARNING: No final message output file produced." >&2
+  jq -r -R 'fromjson? | select(.type=="error" or .type=="turn.failed") | . | tostring' "$EVENTS_FILE" 2>/dev/null | tail -10 >&2 || true
+  cat "$STDERR_FILE" >&2 || true
 fi
-
-if [ "$EXIT_CODE" -ne 0 ]; then
-  echo "" >&2
-  echo "⚠️ Codex exited with code ${EXIT_CODE}" >&2
-  [ -s "$STDERR_FILE" ] && tail -n 20 "$STDERR_FILE" >&2
-  exit "$EXIT_CODE"
-fi
+exit "$rc"

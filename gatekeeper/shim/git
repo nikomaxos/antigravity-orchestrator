@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# =============================================================================
+# AGY-GATEKEEPER TCB GIT SHIM (Git Bash / MSYS2 / POSIX)
+# =============================================================================
+# Enforces zero-bypass on --no-verify, -n (commit), and core.hooksPath override
+# when operating inside an Antigravity hard-gated workspace.
+# =============================================================================
+set -e
+
+# Find real git binary (skipping this shim)
+REAL_GIT=""
+SHIM_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+while IFS= read -r candidate; do
+  if [ -x "$candidate" ] && [ "$candidate" != "$SHIM_PATH" ]; then
+    REAL_GIT="$candidate"
+    break
+  fi
+done < <(which -a git 2>/dev/null || type -ap git 2>/dev/null || true)
+
+if [ -z "$REAL_GIT" ]; then
+  for fallback in "/c/Program Files/Git/bin/git.exe" "/c/Program Files/Git/cmd/git.exe" "/usr/bin/git" "/bin/git"; do
+    if [ -x "$fallback" ] && [ "$fallback" != "$SHIM_PATH" ]; then
+      REAL_GIT="$fallback"
+      break
+    fi
+  done
+fi
+
+REAL_GIT="${REAL_GIT:-git.exe}"
+
+TOPLEVEL=$("$REAL_GIT" rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$TOPLEVEL" ] && [ -f "$TOPLEVEL/.agents/hooks.json" ]; then
+  IS_COMMIT=0
+  for arg in "$@"; do
+    if [ "$arg" = "commit" ]; then
+      IS_COMMIT=1
+    fi
+    if [ "$arg" = "--no-verify" ]; then
+      echo "⛔ BLOCKED BY AGY-GATEKEEPER TCB: --no-verify is strictly forbidden in verified workspaces!" >&2
+      exit 1
+    fi
+    if echo "$arg" | grep -qi "core\.hooksPath"; then
+      echo "⛔ BLOCKED BY AGY-GATEKEEPER TCB: core.hooksPath override is strictly forbidden in verified workspaces!" >&2
+      exit 1
+    fi
+  done
+  if [ "$IS_COMMIT" -eq 1 ]; then
+    for arg in "$@"; do
+      if [ "$arg" = "-n" ]; then
+        echo "⛔ BLOCKED BY AGY-GATEKEEPER TCB: git commit -n is strictly forbidden in verified workspaces!" >&2
+        exit 1
+      fi
+    done
+  fi
+fi
+
+exec "$REAL_GIT" "$@"

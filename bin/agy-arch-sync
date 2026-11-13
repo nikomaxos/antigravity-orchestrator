@@ -2,30 +2,115 @@
 # =============================================================================
 # Antigravity Architecture Synchronizer (`agy-arch-sync`)
 # =============================================================================
-# Pulls latest updates for the Antigravity Orchestrator repo and re-runs install.sh.
+# Synchronizes the multi-model orchestrator matrix, dynamic routing rules,
+# global skills, and registered workspace scripts across machines.
+#
+# Usage:
+#   agy-arch-sync [--quiet]
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+QUIET=0
+for arg in "$@"; do
+  case "$arg" in
+    -q|--quiet|quiet) QUIET=1 ;;
+  esac
+done
 
-REPO_DIR="${HOME}/Development/antigravity-orchestrator"
+log() {
+  if [ "$QUIET" -eq 0 ]; then
+    echo "$@"
+  fi
+}
+
+USER_HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+CONFIG_DIR="${USER_HOME}/.gemini/config"
+REPO_DIR="${USER_HOME}/Development/antigravity-orchestrator"
+STAMP_FILE="${CONFIG_DIR}/.last-orchestrator-sync"
+WS_REGISTRY="${CONFIG_DIR}/orchestrator-workspaces.json"
+
+mkdir -p "$CONFIG_DIR"
 
 if [ ! -d "$REPO_DIR" ]; then
-  echo "❌ Repository not found at: ${REPO_DIR}" >&2
+  log "❌ Repository not found at: ${REPO_DIR}"
   exit 1
 fi
 
-echo "🔄 Checking for updates in ${REPO_DIR}..."
+log "🔄 Checking for updates in ${REPO_DIR}..."
 
 if git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1; then
-  git -C "$REPO_DIR" pull --ff-only || {
-    echo "⚠️ Git pull failed or fast-forward not possible. Please check repository state."
-  }
+  # Try git pull --ff-only
+  if ! git -C "$REPO_DIR" pull --ff-only 2>/dev/null; then
+    # Try fetching and fast-forwarding origin/main
+    git -C "$REPO_DIR" fetch origin main 2>/dev/null || true
+    git -C "$REPO_DIR" merge --ff-only origin/main 2>/dev/null || {
+      log "⚠️ Git pull failed or fast-forward not possible. Keeping local working tree."
+    }
+  fi
 else
-  echo "ℹ️  No remote 'origin' configured for ${REPO_DIR}. Skipping pull."
+  log "ℹ️  No remote 'origin' configured for ${REPO_DIR}. Skipping pull."
 fi
 
-echo "📦 Running install.sh..."
-bash "${REPO_DIR}/install.sh"
-echo "✅ Architecture sync complete!"
+# 1. Sync global rules & routing
+log "📦 Syncing global configs & skills into ${CONFIG_DIR}..."
+if [ -f "${REPO_DIR}/global/gemini/config/model-routing.json" ]; then
+  cp -f "${REPO_DIR}/global/gemini/config/model-routing.json" "${CONFIG_DIR}/model-routing.json"
+fi
+if [ -f "${REPO_DIR}/global/gemini/config/AGENTS.md" ]; then
+  cp -f "${REPO_DIR}/global/gemini/config/AGENTS.md" "${CONFIG_DIR}/AGENTS.md"
+fi
+if [ -f "${REPO_DIR}/global/gemini/config/GEMINI.md" ]; then
+  cp -f "${REPO_DIR}/global/gemini/config/GEMINI.md" "${CONFIG_DIR}/GEMINI.md"
+  cp -f "${REPO_DIR}/global/gemini/config/GEMINI.md" "${USER_HOME}/.gemini/GEMINI.md" 2>/dev/null || true
+fi
+
+# Sync global skills
+mkdir -p "${CONFIG_DIR}/skills"
+for skill in claude codex opencode multi-model-delegation codex-review; do
+  if [ -d "${REPO_DIR}/global/gemini/config/skills/${skill}" ]; then
+    mkdir -p "${CONFIG_DIR}/skills/${skill}"
+    cp -r "${REPO_DIR}/global/gemini/config/skills/${skill}/"* "${CONFIG_DIR}/skills/${skill}/" 2>/dev/null || true
+    chmod +x "${CONFIG_DIR}/skills/${skill}"/scripts/*.sh 2>/dev/null || true
+  fi
+done
+
+# 2. Sync registered workspaces
+SYNC_SCRIPTS=(
+  "codex-lib.sh"
+  "frontier-orchestrate.sh"
+  "codex-orchestrate.sh"
+  "claude-orchestrate.sh"
+  "opencode-orchestrate.sh"
+  "codex-rca.sh"
+  "gemini-quota-mode.sh"
+)
+
+if [ -f "$WS_REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+  log "🔄 Syncing registered workspaces from ${WS_REGISTRY}..."
+  WORKSPACES=$(jq -r '.[] // empty' "$WS_REGISTRY" 2>/dev/null || true)
+  while IFS= read -r ws; do
+    [ -z "$ws" ] && continue
+    if [ -d "$ws" ] && [ -d "${ws}/.agents" ]; then
+      log "   -> Syncing workspace: ${ws}"
+      mkdir -p "${ws}/.agents/config" "${ws}/.agents/scripts"
+
+      # Sync model-routing.json
+      if [ -f "${CONFIG_DIR}/model-routing.json" ]; then
+        cp -f "${CONFIG_DIR}/model-routing.json" "${ws}/.agents/config/model-routing.json"
+      fi
+
+      # Sync scripts
+      for s in "${SYNC_SCRIPTS[@]}"; do
+        src="${REPO_DIR}/workspace-template/.agents/scripts/${s}"
+        if [ -f "$src" ]; then
+          cp -f "$src" "${ws}/.agents/scripts/${s}"
+          chmod +x "${ws}/.agents/scripts/${s}" 2>/dev/null || true
+        fi
+      done
+    fi
+  done <<< "$WORKSPACES"
+fi
+
+# 3. Stamp last sync time
+date +%s > "$STAMP_FILE"
+log "✅ Architecture sync complete! Stamped ${STAMP_FILE}"

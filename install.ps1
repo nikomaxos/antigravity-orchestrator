@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # Antigravity Multi-Model Orchestrator & Gatekeeper Installer (Windows PowerShell: `install.ps1`)
 # =============================================================================
 # Installs global Antigravity configurations, skills, frontier CLIs,
@@ -43,6 +43,17 @@ New-Item -ItemType Directory -Path $geminiConfigDir -Force | Out-Null
 Copy-Item -Path (Join-Path $scriptDir "global\gemini\config\AGENTS.md") -Destination (Join-Path $geminiConfigDir "AGENTS.md") -Force
 Copy-Item -Path (Join-Path $scriptDir "global\gemini\config\GEMINI.md") -Destination (Join-Path $geminiConfigDir "GEMINI.md") -Force
 Copy-Item -Path (Join-Path $scriptDir "global\gemini\config\GEMINI.md") -Destination (Join-Path $userHome ".gemini\GEMINI.md") -Force -ErrorAction SilentlyContinue
+$srcRouting = Join-Path $scriptDir "global\gemini\config\model-routing.json"
+if (Test-Path $srcRouting) {
+    Copy-Item -Path $srcRouting -Destination (Join-Path $geminiConfigDir "model-routing.json") -Force
+    Write-Host "   ✓ $userHome\.gemini\config\model-routing.json" -ForegroundColor Green
+}
+
+# Turbo Velocity & Zero-Popup Configuration
+$turboScript = Join-Path $scriptDir "scripts\configure-antigravity-turbo.ps1"
+if (Test-Path $turboScript) {
+    & $turboScript -WorkspacePath $WorkspacePath
+}
 
 Write-Host "   ✓ $userHome\.gemini\config\AGENTS.md" -ForegroundColor Green
 Write-Host "   ✓ $userHome\.gemini\config\GEMINI.md" -ForegroundColor Green
@@ -152,13 +163,27 @@ if ($userPath -notlike "*$localBin*") {
 }
 
 # -----------------------------------------------------------------------------
-# 6. Gatekeeper Service Setup & Startup
+# 6. Gatekeeper Service Setup & Windows TCB Zero-Bypass
 # -----------------------------------------------------------------------------
 Write-Host "`n🛡️ 6. Configuring AgyGatekeeper daemon (127.0.0.1:18099)..." -ForegroundColor Cyan
-$gatekeeperLib = Join-Path $userHome ".local\lib\agy-gatekeeper"
-New-Item -ItemType Directory -Path $gatekeeperLib -Force | Out-Null
-Copy-Item -Path (Join-Path $scriptDir "gatekeeper\server.js") -Destination (Join-Path $gatekeeperLib "server.js") -Force
-Write-Host "   ✓ Installed Gatekeeper daemon at $gatekeeperLib\server.js" -ForegroundColor Green
+
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$progData = $env:ProgramData
+if (-not $progData) { $progData = "C:\ProgramData" }
+$systemGatekeeperDir = Join-Path $progData "agy-gatekeeper"
+
+# Fallback user directory if not elevated
+$userGatekeeperDir = Join-Path $userHome ".local\lib\agy-gatekeeper"
+$targetGatekeeperDir = if ($isAdmin) { $systemGatekeeperDir } else { $userGatekeeperDir }
+
+New-Item -ItemType Directory -Path $targetGatekeeperDir -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $targetGatekeeperDir "template") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $targetGatekeeperDir "shim") -Force | Out-Null
+
+Copy-Item -Path (Join-Path $scriptDir "gatekeeper\server.js") -Destination (Join-Path $targetGatekeeperDir "server.js") -Force
+Copy-Item -Path (Join-Path $scriptDir "workspace-template\.agents\hooks.json") -Destination (Join-Path $targetGatekeeperDir "template\hooks.json") -Force
+Copy-Item -Path (Join-Path $scriptDir "gatekeeper\shim\*") -Destination (Join-Path $targetGatekeeperDir "shim") -Recurse -Force
+Write-Host "   ✓ Installed Gatekeeper daemon at $targetGatekeeperDir\server.js" -ForegroundColor Green
 
 # Resolve node executable path
 $nodeCmd = "node.exe"
@@ -167,26 +192,68 @@ if ($foundNode) {
     $nodeCmd = $foundNode.Source
 }
 
-# Register for user logon via Registry Run (reliable without admin privileges)
-$runKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$gatekeeperCmd = "`"$nodeCmd`" `"$gatekeeperLib\server.js`""
-try {
-    Set-ItemProperty -Path $runKeyPath -Name "AgyGatekeeper" -Value $gatekeeperCmd -Force
-    Write-Host "   ✓ Registered AgyGatekeeper in HKCU Run (starts on login)" -ForegroundColor Green
-} catch {
-    Write-Host "   ⚠️ Could not register HKCU Run key: $($_.Exception.Message)" -ForegroundColor Yellow
-}
-
-# Try registering Windows Scheduled Task if possible
-try {
-    if (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue) {
-        $taskAction = New-ScheduledTaskAction -Execute $nodeCmd -Argument "`"$gatekeeperLib\server.js`""
-        $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
-        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 3650)
-        Register-ScheduledTask -TaskName "AgyGatekeeper" -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Force -ErrorAction SilentlyContinue | Out-Null
-        Write-Host "   ✓ Registered Scheduled Task: AgyGatekeeper" -ForegroundColor Green
+if ($isAdmin) {
+    Write-Host "🔒 Applying Layer 1 NT AUTHORITY\SYSTEM Privileged TCB Locks..." -ForegroundColor Cyan
+    $gateKey = Join-Path $targetGatekeeperDir "gate.key"
+    if (-not (Test-Path $gateKey)) {
+        $rndSecret = [System.Guid]::NewGuid().ToString("N") + [System.Guid]::NewGuid().ToString("N")
+        Set-Content -Path $gateKey -Value $rndSecret -Encoding ASCII
     }
-} catch {}
+    # Lock gate.key exclusively for SYSTEM and Administrators (standard user gets ACCESS_DENIED)
+    icacls "$gateKey" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(F)" "BUILTIN\Administrators:(F)" | Out-Null
+    icacls (Join-Path $targetGatekeeperDir "server.js") /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(F)" "BUILTIN\Administrators:(F)" "BUILTIN\Users:(RX)" | Out-Null
+    icacls (Join-Path $targetGatekeeperDir "template") /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(F)" "BUILTIN\Administrators:(F)" "BUILTIN\Users:(RX)" /T | Out-Null
+    icacls (Join-Path $targetGatekeeperDir "shim") /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(F)" "BUILTIN\Administrators:(F)" "BUILTIN\Users:(RX)" /T | Out-Null
+    Write-Host "   ✓ Locked gate.key and server assets with NTFS ACLs (Zero Agent Read/Write Access)" -ForegroundColor Green
+
+    # Register Scheduled Task as SYSTEM with highest privileges
+    try {
+        if (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue) {
+            $taskAction = New-ScheduledTaskAction -Execute $nodeCmd -Argument "`"$targetGatekeeperDir\server.js`""
+            $taskTrigger = New-ScheduledTaskTrigger -AtStartup
+            $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -ExecutionTimeLimit (New-TimeSpan -Days 3650)
+            Register-ScheduledTask -TaskName "AntigravityGatekeeper" -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -User "NT AUTHORITY\SYSTEM" -RunLevel Highest -Force -ErrorAction SilentlyContinue | Out-Null
+            Write-Host "   ✓ Registered Scheduled Task: AntigravityGatekeeper (NT AUTHORITY\SYSTEM, Highest)" -ForegroundColor Green
+        }
+    } catch {}
+
+    # Register 30-minute AutoSync Scheduled Task
+    try {
+        if (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue) {
+            $syncScript = Join-Path $localBin "agy-arch-sync.ps1"
+            $syncAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -File `"$syncScript`" -Quiet"
+            $syncTrigger = New-ScheduledTaskTrigger -Daily -At "00:00"
+            $syncSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+            $regTask = Register-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -Action $syncAction -Trigger $syncTrigger -Settings $syncSettings -Force -ErrorAction SilentlyContinue
+            if ($regTask) {
+                try {
+                    $ts = Get-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync"
+                    $ts.Triggers[0].Repetition.Interval = "PT30M"
+                    $ts | Set-ScheduledTask | Out-Null
+                } catch {}
+            }
+            Write-Host "   ✓ Registered Scheduled Task: AntigravityOrchestratorAutoSync (every 30m)" -ForegroundColor Green
+        }
+    } catch {}
+
+    # Add shim ahead in PATH
+    $shimDir = Join-Path $targetGatekeeperDir "shim"
+    $userPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
+    if ($userPath -notlike "*$shimDir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$shimDir;$userPath", [EnvironmentVariableTarget]::User)
+        $env:Path = "$shimDir;$env:Path"
+        Write-Host "   ✓ Added git TCB shim ($shimDir) ahead in User PATH" -ForegroundColor Green
+    }
+} else {
+    Write-Host "   ⚠️ Not running as Administrator. Registered under User profile." -ForegroundColor Yellow
+    Write-Host "   ℹ️ Run install.ps1 as Administrator to enable Layer 1 NT AUTHORITY\SYSTEM Kernel TCB Lock." -ForegroundColor DarkGray
+    $runKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    $gatekeeperCmd = "`"$nodeCmd`" `"$targetGatekeeperDir\server.js`""
+    try {
+        Set-ItemProperty -Path $runKeyPath -Name "AgyGatekeeper" -Value $gatekeeperCmd -Force
+        Write-Host "   ✓ Registered AgyGatekeeper in HKCU Run (starts on login)" -ForegroundColor Green
+    } catch {}
+}
 
 # Start Gatekeeper daemon if not currently responding
 $gatekeeperRunning = $false
@@ -200,7 +267,7 @@ try {
 if (-not $gatekeeperRunning) {
     Write-Host "   Starting AgyGatekeeper daemon in background..." -ForegroundColor DarkGray
     if ($foundNode) {
-        Start-Process -FilePath $nodeCmd -ArgumentList "`"$gatekeeperLib\server.js`"" -WindowStyle Hidden
+        Start-Process -FilePath $nodeCmd -ArgumentList "`"$targetGatekeeperDir\server.js`"" -WindowStyle Hidden
         Start-Sleep -Seconds 2
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:18099/api/gatekeeper/health" -Method Get -TimeoutSec 2 -ErrorAction Stop

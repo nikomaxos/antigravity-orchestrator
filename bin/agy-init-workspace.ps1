@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # Antigravity Workspace Initializer (Windows PowerShell: `agy-init-workspace.ps1`)
 # =============================================================================
 # Initializes any Git repository with the Antigravity Multi-Model Orchestrator,
@@ -71,9 +71,10 @@ $agentReportsDir = Join-Path $targetDir ".agent-reports\codex"
 $rulesDir = Join-Path $agentsDir "rules"
 $scriptsDir = Join-Path $agentsDir "scripts"
 $skillsDir = Join-Path $agentsDir "skills"
+$configDir = Join-Path $agentsDir "config"
 $gitHooksDir = Join-Path $targetDir ".git\hooks"
 
-$dirsToCreate = @($agentsDir, $agentStateDir, $agentReportsDir, $rulesDir, $scriptsDir, $skillsDir, $gitHooksDir)
+$dirsToCreate = @($agentsDir, $agentStateDir, $agentReportsDir, $rulesDir, $scriptsDir, $skillsDir, $configDir, $gitHooksDir)
 foreach ($d in $dirsToCreate) {
     if (-not (Test-Path $d)) {
         New-Item -ItemType Directory -Force -Path $d | Out-Null
@@ -84,9 +85,14 @@ foreach ($d in $dirsToCreate) {
 Copy-Item -Path (Join-Path $templateDir ".agents\hooks.json") -Destination $agentsDir -Force
 Copy-Item -Path (Join-Path $templateDir ".agents\scripts\*") -Destination $scriptsDir -Recurse -Force
 Copy-Item -Path (Join-Path $templateDir ".agents\skills\*") -Destination $skillsDir -Recurse -Force
+$srcRouting = Join-Path $templateDir ".agents\config\model-routing.json"
+if (Test-Path $srcRouting) {
+    Copy-Item -Path $srcRouting -Destination (Join-Path $configDir "model-routing.json") -Force
+}
 Write-Host "   ✓ Installed .agents/hooks.json" -ForegroundColor Green
 Write-Host "   ✓ Installed .agents/scripts/" -ForegroundColor Green
 Write-Host "   ✓ Installed .agents/skills/" -ForegroundColor Green
+Write-Host "   ✓ Installed .agents/config/model-routing.json" -ForegroundColor Green
 
 # 5. Safe Rules Copy: NEVER overwrite or delete existing rules!
 $templateRules = Get-ChildItem -Path (Join-Path $templateDir ".agents\rules") -File
@@ -254,7 +260,44 @@ Set-Content -Path $preCommitPath -Value $preCommitContent -NoNewline -Encoding U
 Set-Content -Path $postCommitPath -Value $postCommitContent -NoNewline -Encoding UTF8
 Write-Host "   ✓ Installed .git/hooks/pre-commit & post-commit" -ForegroundColor Green
 
-# 11. Check Gatekeeper Service
+# 11. Apply TCB Filesystem ACL Lock (Layer 3) if running as Administrator
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdmin) {
+    Write-Host "🔒 Applying TCB Filesystem ACL Lock (NTFS icacls RX)..." -ForegroundColor Cyan
+    $targetUser = $env:USERNAME
+    $protectedFiles = @(
+        (Join-Path $agentsDir "hooks.json"),
+        (Join-Path $scriptsDir "commit-gate.sh"),
+        (Join-Path $scriptsDir "protect-enforcement.sh"),
+        (Join-Path $scriptsDir "verify-gates.sh"),
+        (Join-Path $gitHooksDir "pre-commit"),
+        (Join-Path $gitHooksDir "post-commit")
+    )
+    foreach ($pf in $protectedFiles) {
+        if (Test-Path $pf) {
+            icacls "$pf" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(F)" "BUILTIN\Administrators:(F)" "${targetUser}:(RX)" | Out-Null
+        }
+    }
+    Write-Host "   ✓ Locked enforcement hooks with NTFS ACLs: read+execute only for $targetUser" -ForegroundColor Green
+}
+
+# 12. Register Workspace in ~/.gemini/config/orchestrator-workspaces.json
+$geminiConfigDir = Join-Path $userHome ".gemini\config"
+$wsRegFile = Join-Path $geminiConfigDir "orchestrator-workspaces.json"
+try {
+    New-Item -ItemType Directory -Path $geminiConfigDir -Force | Out-Null
+    $registered = @()
+    if (Test-Path $wsRegFile) {
+        $registered = @(Get-Content -Path $wsRegFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+    }
+    if ($registered -notcontains $targetDir) {
+        $registered += $targetDir
+        $registered | ConvertTo-Json | Set-Content -Path $wsRegFile -Encoding UTF8
+        Write-Host "   ✓ Registered workspace in $wsRegFile" -ForegroundColor Green
+    }
+} catch {}
+
+# 13. Check Gatekeeper Service
 Write-Host ""
 try {
     $resp = Invoke-RestMethod -Uri "http://127.0.0.1:18099/api/gatekeeper/health" -Method Get -TimeoutSec 2 -ErrorAction Stop

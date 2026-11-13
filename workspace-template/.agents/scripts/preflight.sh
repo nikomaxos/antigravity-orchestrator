@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Lightweight staleness check for agy-arch-sync (<2ms)
+SYNC_STAMP="${HOME}/.gemini/config/.last-orchestrator-sync"
+NOW_TS=$(date +%s)
+LAST_SYNC=0
+if [ -f "$SYNC_STAMP" ]; then
+  LAST_SYNC=$(stat -c %Y "$SYNC_STAMP" 2>/dev/null || stat -f %m "$SYNC_STAMP" 2>/dev/null || cat "$SYNC_STAMP" 2>/dev/null || echo 0)
+fi
+case "$LAST_SYNC" in ''|*[!0-9]*) LAST_SYNC=0;; esac
+if [ "$((NOW_TS - LAST_SYNC))" -gt 1800 ] && [ -x "${HOME}/.local/bin/agy-arch-sync" ]; then
+  (nohup "${HOME}/.local/bin/agy-arch-sync" --quiet >/dev/null 2>&1 &)
+fi
+
 INPUT=$(cat)
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 if command -v cygpath >/dev/null 2>&1; then

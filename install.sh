@@ -46,8 +46,17 @@ mkdir -p "${HOME}/.gemini/config"
 cp -f "${SCRIPT_DIR}/global/gemini/config/AGENTS.md" "${HOME}/.gemini/config/AGENTS.md"
 cp -f "${SCRIPT_DIR}/global/gemini/config/GEMINI.md" "${HOME}/.gemini/config/GEMINI.md"
 cp -f "${SCRIPT_DIR}/global/gemini/config/GEMINI.md" "${HOME}/.gemini/GEMINI.md" 2>/dev/null || true
+if [ -f "${SCRIPT_DIR}/global/gemini/config/model-routing.json" ]; then
+  cp -f "${SCRIPT_DIR}/global/gemini/config/model-routing.json" "${HOME}/.gemini/config/model-routing.json"
+  echo "   ✓ ~/.gemini/config/model-routing.json"
+fi
 echo "   ✓ ~/.gemini/config/AGENTS.md"
 echo "   ✓ ~/.gemini/config/GEMINI.md"
+
+# Configure Turbo CitC Zero-Popup Access
+if [ -f "${SCRIPT_DIR}/scripts/configure-antigravity-turbo.sh" ]; then
+  bash "${SCRIPT_DIR}/scripts/configure-antigravity-turbo.sh"
+fi
 
 # 2. Global Skills
 echo ""
@@ -78,6 +87,7 @@ mkdir -p "${HOME}/.local/bin"
 cp -f "${SCRIPT_DIR}/bin/agy-init-workspace" "${HOME}/.local/bin/agy-init-workspace"
 cp -f "${SCRIPT_DIR}/bin/agy-init-workspace.ps1" "${HOME}/.local/bin/agy-init-workspace.ps1" 2>/dev/null || true
 cp -f "${SCRIPT_DIR}/bin/agy-arch-sync" "${HOME}/.local/bin/agy-arch-sync"
+cp -f "${SCRIPT_DIR}/bin/agy-arch-sync.ps1" "${HOME}/.local/bin/agy-arch-sync.ps1" 2>/dev/null || true
 cp -f "${SCRIPT_DIR}/bin/frontier-orchestrate" "${HOME}/.local/bin/frontier-orchestrate"
 cp -f "${SCRIPT_DIR}/bin/frontier-orchestrate.ps1" "${HOME}/.local/bin/frontier-orchestrate.ps1" 2>/dev/null || true
 cp -f "${SCRIPT_DIR}/bin/agy-setup-clis" "${HOME}/.local/bin/agy-setup-clis"
@@ -88,6 +98,7 @@ chmod +x "${HOME}/.local/bin/agy-init-workspace" \
 echo "   ✓ ~/.local/bin/agy-init-workspace"
 echo "   ✓ ~/.local/bin/agy-init-workspace.ps1"
 echo "   ✓ ~/.local/bin/agy-arch-sync"
+echo "   ✓ ~/.local/bin/agy-arch-sync.ps1"
 echo "   ✓ ~/.local/bin/frontier-orchestrate"
 echo "   ✓ ~/.local/bin/frontier-orchestrate.ps1"
 echo "   ✓ ~/.local/bin/agy-setup-clis"
@@ -100,6 +111,52 @@ for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
     fi
   fi
 done
+
+# Register Default Workspaces
+WS_REG="${HOME}/.gemini/config/orchestrator-workspaces.json"
+DEFAULT_WS="${HOME}/Development/messaging-agent"
+if [ ! -f "$WS_REG" ]; then
+  echo "[\"${DEFAULT_WS}\"]" > "$WS_REG"
+  echo "   ✓ Created workspace registry with ${DEFAULT_WS}"
+elif command -v jq >/dev/null 2>&1; then
+  TMP_WS=$(mktemp)
+  jq --arg ws "$DEFAULT_WS" 'if index($ws) then . else . + [$ws] end' "$WS_REG" > "$TMP_WS" 2>/dev/null && mv "$TMP_WS" "$WS_REG" || rm -f "$TMP_WS"
+  echo "   ✓ Registered ${DEFAULT_WS} in ${WS_REG}"
+fi
+
+# Configure 30-minute systemd --user timer for agy-arch-sync
+SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
+mkdir -p "$SYSTEMD_USER_DIR"
+cat > "${SYSTEMD_USER_DIR}/agy-orchestrator-sync.service" <<EOF
+[Unit]
+Description=Antigravity Orchestrator Architecture Sync
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=${HOME}/.local/bin/agy-arch-sync --quiet
+EOF
+
+cat > "${SYSTEMD_USER_DIR}/agy-orchestrator-sync.timer" <<EOF
+[Unit]
+Description=Run Antigravity Orchestrator Architecture Sync every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Unit=agy-orchestrator-sync.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload 2>/dev/null || true
+  systemctl --user enable --now agy-orchestrator-sync.timer 2>/dev/null || true
+  echo "   ✓ Enabled systemd --user timer: agy-orchestrator-sync.timer (every 30m)"
+fi
+
+date +%s > "${HOME}/.gemini/config/.last-orchestrator-sync"
 
 # 5. External CLIs setup
 if [ "$SKIP_CLIS" -eq 0 ]; then

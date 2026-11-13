@@ -1,0 +1,256 @@
+{
+  "schema_version": "2026.11.1",
+  "updated_at": "2026-11-13T12:00:00Z",
+  "pools": {
+    "pool_a": {
+      "name": "Antigravity Native Gemini",
+      "provider": "google",
+      "models": {
+        "t0_orchestrator": {
+          "id": "gemini-4-carbon-medium",
+          "display_name": "Orchestrator (Carbon)",
+          "alias": "gemini-pro-orchestrator",
+          "default_effort": "medium",
+          "role": "UI Orchestrator Default (~1s latency, <35K tokens parent context)"
+        },
+        "t1_explorer": {
+          "id": "gemini-3.8-flash-low",
+          "display_name": "Gemini 3.8 Flash",
+          "subagent_model": "flash",
+          "default_effort": "low",
+          "role": "T1 Fast Explorer / I/O / Docs Worker"
+        },
+        "t2_coding": {
+          "id": "gemini-4-hydrogen-medium",
+          "display_name": "Gemini 4 Hydrogen",
+          "default_effort": "medium",
+          "supported_efforts": ["low", "medium"],
+          "role": "Native Agentic Coding / Parallel Batching Workhorse"
+        },
+        "t3_refactoring": {
+          "id": "gemini-4-hydrogen-high",
+          "display_name": "Gemini 4 Hydrogen High",
+          "fallback_id": "gemini-4-carbon-medium",
+          "default_effort": "high",
+          "role": "Native Multi-File Coding / Refactoring"
+        },
+        "t4_deep": {
+          "id": "gemini-4-carbon-high",
+          "display_name": "Gemini 4 Carbon High",
+          "subagent_model": "pro",
+          "default_effort": "high",
+          "role": "Deep Architecture / Concurrency / Security & Final Fallback"
+        },
+        "t4_deep_iterative": {
+          "id": "gemini-4-hydrogen-xhigh",
+          "display_name": "Gemini 4 Hydrogen xhigh",
+          "default_effort": "xhigh",
+          "role": "Deep repo-wide iterative code debugging"
+        },
+        "t4_compliance": {
+          "id": "gemini-4-argon-high",
+          "display_name": "Gemini 4 Argon High",
+          "default_effort": "high",
+          "role": "Enterprise compliance / formal cybersecurity specs"
+        }
+      }
+    },
+    "pool_a_plus": {
+      "name": "Antigravity Plus Credit Bundle",
+      "provider": "antigravity-plus",
+      "models": {
+        "claude_sonnet": {
+          "id": "claude-sonnet-5-5-medium",
+          "supported_efforts": ["low", "medium", "high"],
+          "role": "Orchestrator Dropdown Option / Plus Bundle Reasoning"
+        },
+        "claude_opus": {
+          "id": "claude-opus-5-5-high",
+          "supported_efforts": ["low", "medium", "high"],
+          "role": "Deep Architecture / Plus Bundle Reasoning"
+        },
+        "gpt_oss": {
+          "id": "gpt-oss-120b-medium",
+          "supported_efforts": ["medium"],
+          "role": "Open-weight reasoning workhorse"
+        }
+      }
+    },
+    "pool_b": {
+      "name": "OpenAI Codex CLI Subscription",
+      "provider": "openai-codex",
+      "cli": "codex",
+      "models": {
+        "t1_reserve": {
+          "primary": "gpt-6-luna",
+          "primary_effort": "low",
+          "fallback": "gpt-reserve",
+          "fallback_effort": "low"
+        },
+        "t2_ui": {
+          "primary": "gpt-6.1-terra",
+          "primary_effort": "medium",
+          "fallback": "gpt-6.1-sol",
+          "fallback_effort": "medium"
+        },
+        "t3_backend": {
+          "primary": "gpt-6.1-sol",
+          "primary_effort": "high",
+          "fallback": "gpt-6-astra",
+          "fallback_effort": "high"
+        },
+        "t4_deep": {
+          "primary": "gpt-6-astra",
+          "primary_effort": "xhigh",
+          "fallback": "gpt-6.1-sol",
+          "fallback_effort": "xhigh"
+        },
+        "rca": {
+          "primary": "gpt-6-astra",
+          "primary_effort": "xhigh",
+          "fallback": "gpt-6.1-sol",
+          "fallback_effort": "xhigh"
+        },
+        "review": {
+          "r1": {
+            "model": "gpt-6.1-terra",
+            "effort": "medium"
+          },
+          "r2": {
+            "model": "gpt-6.1-sol",
+            "effort": "high"
+          },
+          "r3": {
+            "model": "gpt-6-astra",
+            "effort": "high"
+          }
+        }
+      }
+    },
+    "pool_c": {
+      "name": "Anthropic Claude Code CLI Subscription",
+      "provider": "anthropic-claude",
+      "cli": "claude",
+      "models": {
+        "t1_reserve": {
+          "primary": "claude-sonnet-5-5",
+          "primary_effort": "low",
+          "fallback": "sonnet",
+          "fallback_effort": "low"
+        },
+        "t2_ui": {
+          "primary": "claude-sonnet-5-5",
+          "primary_effort": "medium",
+          "fallback": "sonnet",
+          "fallback_effort": "medium"
+        },
+        "t3_backend": {
+          "primary": "claude-sonnet-5-5",
+          "primary_effort": "high",
+          "fallback": "sonnet",
+          "fallback_effort": "high"
+        },
+        "t4_deep": {
+          "primary": "claude-opus-5-5",
+          "primary_effort": "high",
+          "fallback": "opus",
+          "fallback_effort": "high",
+          "secondary_fallback": "claude-sonnet-5-5",
+          "secondary_fallback_effort": "high"
+        },
+        "rca": {
+          "primary": "claude-opus-5-5",
+          "primary_effort": "high",
+          "fallback": "opus",
+          "fallback_effort": "high",
+          "secondary_fallback": "claude-sonnet-5-5",
+          "secondary_fallback_effort": "high"
+        },
+        "review": {
+          "r1": {
+            "primary": "claude-sonnet-5-5",
+            "primary_effort": "medium",
+            "fallback": "sonnet",
+            "fallback_effort": "medium"
+          },
+          "r2": {
+            "primary": "claude-sonnet-5-5",
+            "primary_effort": "high",
+            "fallback": "sonnet",
+            "fallback_effort": "high"
+          },
+          "r3": {
+            "primary": "claude-opus-5-5",
+            "primary_effort": "high",
+            "fallback": "opus",
+            "fallback_effort": "high"
+          }
+        }
+      }
+    },
+    "pool_d": {
+      "name": "OpenCode DeepSeek Official API",
+      "provider": "opencode-deepseek",
+      "cli": "opencode",
+      "models": {
+        "t1_flash": {
+          "primary": "deepseek/deepseek-flash",
+          "fallback": "deepseek/deepseek-v4-pro",
+          "free_fallback": "opencode/deepseek-v4.1-flash-free"
+        },
+        "stage0": {
+          "primary": "deepseek/deepseek-v4-pro",
+          "free_fallback": "opencode/deepseek-v4.1-flash-free"
+        },
+        "pro_fallback": {
+          "primary": "deepseek/deepseek-v4-pro",
+          "free_fallback": "opencode/deepseek-v4.1-flash-free"
+        }
+      }
+    }
+  },
+  "tier_cascades": {
+    "ui": [
+      {"pool": "pool_c", "tier_key": "t2_ui"},
+      {"pool": "pool_b", "tier_key": "t2_ui"},
+      {"pool": "pool_d", "tier_key": "pro_fallback"}
+    ],
+    "backend": [
+      {"pool": "pool_b", "tier_key": "t3_backend"},
+      {"pool": "pool_c", "tier_key": "t3_backend"},
+      {"pool": "pool_d", "tier_key": "pro_fallback"}
+    ],
+    "deep": [
+      {"pool": "pool_b", "tier_key": "t4_deep"},
+      {"pool": "pool_c", "tier_key": "t4_deep"},
+      {"pool": "pool_d", "tier_key": "pro_fallback"}
+    ],
+    "flash": [
+      {"pool": "pool_d", "tier_key": "t1_flash"},
+      {"pool": "pool_c", "tier_key": "t1_reserve"},
+      {"pool": "pool_b", "tier_key": "t1_reserve"}
+    ]
+  },
+  "review_cascades": {
+    "r1": {
+      "pool_b": {"model": "gpt-6.1-terra", "effort": "medium"},
+      "pool_c": {"model": "claude-sonnet-5-5", "fallback": "sonnet", "effort": "medium"},
+      "pool_d": {"model": "deepseek/deepseek-v4-pro"}
+    },
+    "r2": {
+      "pool_b": {"model": "gpt-6.1-sol", "effort": "high"},
+      "pool_c": {"model": "claude-sonnet-5-5", "fallback": "sonnet", "effort": "high"},
+      "pool_d": {"model": "deepseek/deepseek-v4-pro"}
+    },
+    "r3": {
+      "pool_b": {"model": "gpt-6-astra", "effort": "high"},
+      "pool_c": {"model": "claude-opus-5-5", "fallback": "opus", "effort": "high"},
+      "pool_d": {"model": "deepseek/deepseek-v4-pro"}
+    }
+  },
+  "rca_cascade": [
+    {"pool": "pool_b", "tier_key": "rca"},
+    {"pool": "pool_c", "tier_key": "rca"},
+    {"pool": "pool_d", "tier_key": "pro_fallback"}
+  ]
+}

@@ -10,12 +10,9 @@
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PATH="/home/nick/.local/bin:/home/nick/.opencode/bin:/home/nick/.npm-global/bin:${PATH}"
 # shellcheck source=codex-lib.sh
-source "${SCRIPT_DIR}/codex-lib.sh"
+source "/home/nick/Development/messaging-agent/.agents/scripts/codex-lib.sh"
 cd "$CODEX_REPO_ROOT"
 
 MODEL="$CODEX_RCA_MODEL"; EFFORT="$CODEX_RCA_EFFORT"; ATTACH=(); PROBLEM=""
@@ -42,10 +39,12 @@ PROMPT_FILE="${CODEX_REPORT_DIR}/rca-${STAMP}.prompt.md"
 {
   cat <<'EOF'
 # ROLE
-You are a principal engineer performing ROOT-CAUSE ANALYSIS.
+You are a principal engineer performing ROOT-CAUSE ANALYSIS for the `messaging-agent`
+platform (event-driven Java/Spring microservices, React admin panel, SMPP, Redis, Kafka,
+PostgreSQL, Docker Compose staging on DevBox 10.10.10.96, K3s production).
 You run in a READ-ONLY sandbox. NEVER attempt to modify files. Only run focused read-only
 commands (git log/show/diff/blame, cat, grep, rg, find, ls) on directly relevant paths.
-If a command is blocked by the sandbox (e.g. docker, network), list it under
+If a command is blocked by the sandbox (e.g. docker, ssh, network), list it under
 "Commands for the implementation agent".
 
 # METHOD
@@ -53,7 +52,7 @@ If a command is blocked by the sandbox (e.g. docker, network), list it under
 2. Trace the real execution path in the code (entry point -> failure point).
 3. Form hypotheses, then confirm or eliminate each with evidence (`file:line`, git history, logs).
 4. Identify THE root cause (not the symptom). If uncertain, rank candidates with probabilities.
-5. Propose the minimal correct fix and its regression surface.
+5. Propose the minimal correct fix (respecting the No-Hardcoded-Routing UI-first invariant!) and its regression surface.
 
 # OUTPUT (Markdown in Greek; keep identifiers/paths/commands in English)
 ## Σύνοψη
@@ -61,7 +60,7 @@ If a command is blocked by the sandbox (e.g. docker, network), list it under
 ## Root Cause (with `path:line` & code excerpts)
 ## Confidence (High / Medium / Low + why)
 ## Υποθέσεις που αποκλείστηκαν
-## Προτεινόμενη διόρθωση (exact files/functions/diff)
+## Προτεινόμενη διόρθωση (UI/DB home if routing-related + exact files/functions)
 ## Regression surface
 ## Βήματα επαλήθευσης ("Symptom Assertion")
 ## Commands for the implementation agent
@@ -97,29 +96,41 @@ if [ "$PREFER_CLI" = "auto" ] || [ "$PREFER_CLI" = "codex" ]; then
 fi
 
 if [ -z "$USED_LABEL" ] && { [ "$PREFER_CLI" = "auto" ] || [ "$PREFER_CLI" = "claude" ]; }; then
-  echo "🤖 [Pool C] Failing over RCA to Claude Code CLI (model=opus, effort=high)..."
-  claude_run "rca" "opus" "high" "" "$OUT" "$PROMPT_FILE"
-  [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ Claude ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
-  [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="Claude Code (opus, effort high)"
+  CL_RCA="${CLAUDE_RCA_MODEL:-claude-opus-5-5}"
+  CL_EFF="${CLAUDE_RCA_EFFORT:-high}"
+  echo "🤖 [Pool C] Failing over RCA to Claude Code CLI (model=${CL_RCA}, effort=${CL_EFF})..."
+  claude_run "rca" "$CL_RCA" "$CL_EFF" "" "$OUT" "$PROMPT_FILE"
+  [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
+  if [ "$CODEX_RUN_STATUS" = "RATE_LIMITED" ]; then
+    CL_FALLBACK="${CLAUDE_R2_MODEL:-claude-sonnet-5-5}"
+    echo "ℹ️  Claude ${CL_RCA} rate-limited; retrying RCA with Claude ${CL_FALLBACK} (effort=high)..."
+    claude_run "rca" "$CL_FALLBACK" "high" "" "$OUT" "$PROMPT_FILE"
+    [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
+    [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="Claude Code CLI (${CL_FALLBACK}, effort high)"
+  elif [ "$CODEX_RUN_STATUS" = "OK" ]; then
+    USED_LABEL="Claude Code CLI (${CL_RCA}, effort ${CL_EFF})"
+  fi
 fi
 
 if [ -z "$USED_LABEL" ] && { [ "$PREFER_CLI" = "auto" ] || [ "$PREFER_CLI" = "opencode" ]; }; then
-  echo "🤖 [Pool D] Failing over RCA to OpenCode CLI (model=${OPENCODE_PRO_MODEL})..."
-  opencode_run "rca" "$OPENCODE_PRO_MODEL" "" "$OUT" "$PROMPT_FILE" 0
+  echo "🤖 [Pool D] Failing over RCA to OpenCode DeepSeek (${OPENCODE_PRO_MODEL})..."
+  opencode_run "rca" "$OPENCODE_PRO_MODEL" "" "$OUT" "$PROMPT_FILE" 1
   [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
   [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="OpenCode (${OPENCODE_PRO_MODEL})"
 fi
 
-rm -f "$PROMPT_FILE"
-
 if [ -n "$USED_LABEL" ] && [ -s "$OUT" ]; then
-  ln -sf "$(basename "$OUT")" "${CODEX_REPORT_DIR}/rca-latest.md"
-  echo "✅ RCA completed by ${USED_LABEL}"
-  echo "📄 Report saved to: ${OUT} (symlinked to ${CODEX_REPORT_DIR}/rca-latest.md)"
-  cat "$OUT"
+  {
+    echo
+    echo "---"
+    echo "_Generated by ${USED_LABEL} at ${STAMP}, HEAD $(git rev-parse --short HEAD). Read-only analysis — verify evidence before acting._"
+  } >> "$OUT"
+  ln -sfn "$(basename "$OUT")" "${CODEX_REPORT_DIR}/rca-latest.md"
+  echo "✅ RCA report (${USED_LABEL}): ${OUT#"$CODEX_REPO_ROOT"/}"
   exit 0
 fi
 
-echo "⚠️  All external RCA models failed / rate-limited."
-echo "➡️  Falling back to Pool A: Spawn internal Gemini 4 Carbon High subagent with problem context."
+echo "⚠️  External RCA CLIs unavailable/rate-limited (last=${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR})"
+echo "➡️  FALLBACK: spawn an internal subagent (Gemini 4 Carbon High) with the prompt in:"
+echo "    ${PROMPT_FILE#"$CODEX_REPO_ROOT"/}"
 exit 2

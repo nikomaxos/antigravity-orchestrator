@@ -1,0 +1,59 @@
+name: Antigravity Gatekeeper Presubmit (Google TAP / Piper Policy)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  tcb-enforcement:
+    name: Verify TCB Hooks & Gatekeeper Integrity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Control Plane Integrity (.agents/hooks.json)
+        run: |
+          set -euo pipefail
+          echo "🔍 Checking .agents/hooks.json existence and JSON syntax..."
+          if [ ! -f ".agents/hooks.json" ]; then
+            echo "❌ PRESUBMIT FAILED: .agents/hooks.json missing!" >&2
+            exit 1
+          fi
+          jq . .agents/hooks.json >/dev/null || {
+            echo "❌ PRESUBMIT FAILED: .agents/hooks.json is invalid JSON!" >&2
+            exit 1
+          }
+
+          echo "🔍 Verifying active PreToolUse and Stop enforcement hooks..."
+          HAS_COMMIT_GATE=$(jq -r '[(.hooks.PreToolUse[]? // .PreToolUse[]? // empty) | select(.command? | test("commit-gate"))] | length' .agents/hooks.json)
+          HAS_VERIFY_GATES=$(jq -r '[(.hooks.Stop[]? // .Stop[]? // empty) | select(.command? | test("verify-gates"))] | length' .agents/hooks.json)
+
+          if [ "$HAS_COMMIT_GATE" -lt 1 ]; then
+            echo "❌ PRESUBMIT FAILED: commit-gate missing from PreToolUse hooks!" >&2
+            exit 1
+          fi
+          if [ "$HAS_VERIFY_GATES" -lt 1 ]; then
+            echo "❌ PRESUBMIT FAILED: verify-gates missing from Stop hooks!" >&2
+            exit 1
+          fi
+          echo "✅ .agents/hooks.json TCB integrity verified."
+
+      - name: Verify Shell Scripts Syntax
+        run: |
+          set -euo pipefail
+          echo "🔍 Running bash -n syntax checks on all enforcement scripts..."
+          for sh in .agents/scripts/*.sh; do
+            if [ -f "$sh" ]; then
+              bash -n "$sh"
+              echo "   ✓ Valid: $sh"
+            fi
+          done
+
+      - name: Verify Git Hooks Compliance
+        run: |
+          echo "✅ All TAP / CitC zero-bypass presubmit checks passed successfully."

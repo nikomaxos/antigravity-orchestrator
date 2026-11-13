@@ -244,6 +244,95 @@ function resolveProcScriptPath(pid) {
   }
 }
 
+function verifyWorkspaceTCBIntegrity(workspace) {
+  const hooksFile = path.join(workspace, '.agents', 'hooks.json');
+  const gitDir = path.join(workspace, '.git');
+  const preCommitHook = path.join(gitDir, 'hooks', 'pre-commit');
+
+  const templateHooksCandidates = [
+    isWin ? (process.env.PROGRAMDATA ? path.join(process.env.PROGRAMDATA, 'agy-gatekeeper', 'template', 'hooks.json') : '') : '/etc/agy-gatekeeper/template/hooks.json',
+    path.join(USER_HOME, '.local', 'share', 'antigravity-orchestrator', 'workspace-template', '.agents', 'hooks.json'),
+    path.join(__dirname, '..', 'workspace-template', '.agents', 'hooks.json'),
+    path.join(__dirname, 'template', 'hooks.json')
+  ].filter(Boolean);
+
+  let canonicalTemplate = null;
+  for (const tc of templateHooksCandidates) {
+    if (fs.existsSync(tc)) {
+      try {
+        const content = fs.readFileSync(tc, 'utf8');
+        JSON.parse(content);
+        canonicalTemplate = tc;
+        break;
+      } catch (_) {}
+    }
+  }
+
+  let hooksValid = false;
+  if (fs.existsSync(hooksFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
+      const hooks = parsed.hooks || parsed;
+      const preToolUse = hooks.PreToolUse || [];
+      const stop = hooks.Stop || [];
+      const hasCommitGate = JSON.stringify(preToolUse).includes('commit-gate');
+      const hasVerifyGates = JSON.stringify(stop).includes('verify-gates');
+      if (hasCommitGate && hasVerifyGates) {
+        hooksValid = true;
+      }
+    } catch (_) {
+      hooksValid = false;
+    }
+  }
+
+  if (!hooksValid) {
+    if (canonicalTemplate) {
+      try {
+        fs.mkdirSync(path.join(workspace, '.agents'), { recursive: true });
+        fs.copyFileSync(canonicalTemplate, hooksFile);
+        return {
+          ok: false,
+          error: 'TAMPER_DETECTED: hooks.json missing or modified (auto-restored from template; retry request)'
+        };
+      } catch (err) {
+        return { ok: false, error: `TAMPER_DETECTED: hooks.json missing or modified (restore failed: ${err.message})` };
+      }
+    }
+    return { ok: false, error: 'TAMPER_DETECTED: hooks.json missing or modified and no template available' };
+  }
+
+  if (fs.existsSync(gitDir) && fs.statSync(gitDir).isDirectory()) {
+    let preCommitValid = false;
+    if (fs.existsSync(preCommitHook)) {
+      try {
+        const content = fs.readFileSync(preCommitHook, 'utf8');
+        if (content.includes('commit-gate')) {
+          preCommitValid = true;
+        }
+      } catch (_) {}
+    }
+
+    if (!preCommitValid) {
+      try {
+        fs.mkdirSync(path.dirname(preCommitHook), { recursive: true });
+        const hookContent = '#!/usr/bin/env bash\nexec "$(git rev-parse --show-toplevel)/.agents/scripts/commit-gate.sh" "$@"\n';
+        fs.writeFileSync(preCommitHook, hookContent, { mode: 0o755 });
+        if (!isWin) {
+          try { fs.chmodSync(preCommitHook, 0o755); } catch (_) {}
+        }
+        return {
+          ok: false,
+          error: 'TAMPER_DETECTED: .git/hooks/pre-commit missing or modified (auto-restored; retry request)'
+        };
+      } catch (err) {
+        return { ok: false, error: `TAMPER_DETECTED: .git/hooks/pre-commit missing or modified (restore failed: ${err.message})` };
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
 function getExpectedRunner(workspace, gate) {
   switch (gate) {
     case 'qa': return path.join(workspace, '.agents/scripts/run-qa-gate.sh');
@@ -443,6 +532,11 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { ok: false, error: 'payload must be a JSON object' });
       }
 
+      const tcb = verifyWorkspaceTCBIntegrity(workspace);
+      if (!tcb.ok) {
+        return sendJson(res, 403, { ok: false, error: tcb.error });
+      }
+
       const secret = getMasterSecret();
       syncWorkspaceHookSecret(workspace, secret);
 
@@ -571,6 +665,10 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(res, 400, { ok: false, error: err.message });
       }
+      const tcb = verifyWorkspaceTCBIntegrity(workspace);
+      if (!tcb.ok) {
+        return sendJson(res, 403, { ok: false, error: tcb.error });
+      }
       let gate = String(urlObj.searchParams.get('gate') || '').trim();
       gate = gate.replace(/^\.agent-state\//, '').replace(/\.json$/, '');
       const secret = getMasterSecret();
@@ -592,6 +690,10 @@ const server = http.createServer(async (req, res) => {
         workspace = resolveWorkspace(urlObj.searchParams.get('workspace'));
       } catch (err) {
         return sendJson(res, 400, { ok: false, error: err.message });
+      }
+      const tcb = verifyWorkspaceTCBIntegrity(workspace);
+      if (!tcb.ok) {
+        return sendJson(res, 403, { ok: false, error: tcb.error });
       }
 
       const secret = getMasterSecret();
