@@ -1,38 +1,40 @@
 {
-  "schema_version": "2026.11.1",
-  "updated_at": "2026-11-13T12:00:00Z",
+  "schema_version": "2026.11.2",
+  "updated_at": "2026-11-17T16:20:00Z",
   "pools": {
     "pool_a": {
       "name": "Antigravity Native Gemini",
       "provider": "google",
       "models": {
         "t0_orchestrator": {
-          "id": "gemini-4-carbon-medium",
-          "display_name": "Orchestrator (Carbon)",
+          "id": "gemini-pro-orchestrator",
+          "fallback_id": "gemini-4-carbon-medium",
+          "display_name": "Orchestrator (Carbon -> Hydrogen)",
           "alias": "gemini-pro-orchestrator",
           "default_effort": "medium",
-          "role": "UI Orchestrator Default (~1s latency, <35K tokens parent context)"
+          "role": "Two-phase UI Orchestrator Default: Gemini 4 Carbon plans -> Gemini 4 Hydrogen executes via exit_plan_mode (19% faster, ~24% less quota)"
         },
         "t1_explorer": {
-          "id": "gemini-3.8-flash-low",
-          "display_name": "Gemini 3.8 Flash",
-          "subagent_model": "flash",
+          "id": "gemini-4-hydrogen-low",
+          "display_name": "Gemini 4 Hydrogen (Low)",
+          "legacy_subagent_enum_id": "gemini-3.8-flash-low",
+          "subagent_model": "inherit_on_hydrogen_or_flash_from_carbon",
           "default_effort": "low",
-          "role": "T1 Fast Explorer / I/O / Docs Worker"
+          "role": "Primary T1 Fast Explorer / Triage / Docs (2.5x faster, 57% vs 18.2% Terminal-Bench 4.1, >5x fewer hallucinations; use invoke_subagent Model='flash' only for browser subagent or bulk raw I/O from non-Orchestrator Carbon turns)"
         },
         "t2_coding": {
           "id": "gemini-4-hydrogen-medium",
-          "display_name": "Gemini 4 Hydrogen",
+          "display_name": "Gemini 4 Hydrogen (Medium)",
           "default_effort": "medium",
-          "supported_efforts": ["low", "medium"],
-          "role": "Native Agentic Coding / Parallel Batching Workhorse"
+          "supported_efforts": ["low", "medium", "high"],
+          "role": "Primary Native T2 Coding, Patch Application & Test Workhorse (replaces 3.8 Flash Executor)"
         },
         "t3_refactoring": {
           "id": "gemini-4-hydrogen-high",
-          "display_name": "Gemini 4 Hydrogen High",
+          "display_name": "Gemini 4 Hydrogen (High)",
           "fallback_id": "gemini-4-carbon-medium",
           "default_effort": "high",
-          "role": "Native Multi-File Coding / Refactoring"
+          "role": "Primary Native T3 Multi-File Coding, Refactoring & Integration Executor (replaces 3.8 Flash Executor)"
         },
         "t4_deep": {
           "id": "gemini-4-carbon-high",
@@ -43,6 +45,7 @@
         },
         "t4_deep_iterative": {
           "id": "gemini-4-hydrogen-xhigh",
+          "fallback_id": "gemini-4-hydrogen-high",
           "display_name": "Gemini 4 Hydrogen xhigh",
           "default_effort": "xhigh",
           "role": "Deep repo-wide iterative code debugging"
@@ -52,6 +55,13 @@
           "display_name": "Gemini 4 Argon High",
           "default_effort": "high",
           "role": "Enterprise compliance / formal cybersecurity specs"
+        },
+        "release_gatekeeper": {
+          "id": "gemini-4-hydrogen-low",
+          "fallback_id": "gemini-4-hydrogen-medium",
+          "display_name": "Gemini 4 Hydrogen (Low/Medium)",
+          "default_effort": "low",
+          "role": "Gatekeeper & Release Execution Worker (replaces 3.8 Flash)"
         }
       }
     },

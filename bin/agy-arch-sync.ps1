@@ -8,6 +8,7 @@
 [CmdletBinding()]
 param(
     [switch]$Quiet = $false,
+    [switch]$Force = $false,
     [string]$WorkspacePath = ""
 )
 
@@ -139,6 +140,13 @@ if (Test-Path $wsRegistry) {
         $workspaces = @(Get-Content -Path $wsRegistry -Raw -Encoding UTF8 | ConvertFrom-Json)
         foreach ($ws in $workspaces) {
             if ($ws -and (Test-Path $ws) -and (Test-Path (Join-Path $ws ".agents"))) {
+                if (-not $Force -and (Test-Path (Join-Path $ws ".git"))) {
+                    $dirty = git -C "$ws" status --porcelain -- . ':(exclude).agent-state' ':(exclude).agent-reports' ':(exclude).last-staging-deploy' 2>$null
+                    if ($dirty) {
+                        Write-Log "   -> Skipping workspace $ws (uncommitted changes in progress; pass -Force to override)" "DarkGray"
+                        continue
+                    }
+                }
                 Write-Log "   -> Syncing workspace: $ws" "DarkGray"
                 $wsConfig = Join-Path $ws ".agents\config"
                 $wsScripts = Join-Path $ws ".agents\scripts"

@@ -39,10 +39,10 @@ build_json() {
       reserve_passthrough_mode: $reserve,
       allow_gemini_subagents: $allow_sub,
       allow_gemini_flash_t1: $allow_sub,
-      t1_replacement: "Pool D (deepseek/deepseek-v4-pro | deepseek-flash) -> Pool C (claude sonnet low) -> Pool B (codex gpt-5.6-terra low)",
-      t2_replacement: "Pool C (claude sonnet 4.6) -> Pool B (codex gpt-5.6-terra medium) -> Pool D (deepseek-v4-pro)",
-      t3_replacement: "Pool B (codex gpt-6-astra high) -> Pool C (claude sonnet 4.6) -> Pool D (deepseek-v4-pro)",
-      t4_replacement: "Pool B (codex gpt-6-astra xhigh) -> Pool C (claude opus 4.6 high) -> Pool D (deepseek-v4-pro)",
+      t1_replacement: "Pool D (deepseek/deepseek-flash | deepseek-v4-pro) -> Pool C (claude-sonnet-5-5 low) -> Pool B (codex gpt-6-luna low)",
+      t2_replacement: "Pool C (claude-sonnet-5-5 med) -> Pool B (codex gpt-6.1-terra med) -> Pool D (deepseek-v4-pro)",
+      t3_replacement: "Pool B (codex gpt-6.1-sol high) -> Pool C (claude-sonnet-5-5 high) -> Pool D (deepseek-v4-pro)",
+      t4_replacement: "Pool B (codex gpt-6-astra xhigh) -> Pool C (claude-opus-5-5 high) -> Pool D (deepseek-v4-pro)",
       updated_at: $ts
     }'
 }
@@ -68,7 +68,7 @@ case "$MODE" in
       exit 1
     fi
     write_state_atomic "true" "$PCT"
-    echo "🚨 GEMINI RESERVE PASS-THROUGH MODE ACTIVATED (Remaining=${PCT}% < ${THRESHOLD_PCT}%). ALL Gemini models (including 3.8 Flash) are replaced by Pools B/C/D."
+    echo "🚨 GEMINI RESERVE PASS-THROUGH MODE ACTIVATED (Remaining=${PCT}% < ${THRESHOLD_PCT}%). ALL Gemini models (including Hydrogen & 3.8 Flash) are replaced by Pools B/C/D."
     ;;
   --set-normal)
     PCT="${2:-100}"
