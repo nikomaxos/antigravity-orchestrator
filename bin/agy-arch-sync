@@ -170,6 +170,7 @@ SYNC_SCRIPTS=(
   "opencode-orchestrate.sh"
   "codex-rca.sh"
   "gemini-quota-mode.sh"
+  "preflight.sh"
 )
 
 if [ -f "$WS_REGISTRY" ] && command -v jq >/dev/null 2>&1; then

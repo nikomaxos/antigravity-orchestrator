@@ -642,8 +642,10 @@ if (-not (Test-Path (Join-Path $repoDir ".git"))) {
     if ($curOrigin -and $curOrigin -like "git@*") {
         git -C "$repoDir" remote set-url origin "${repoUrl}"
     }
+    git -C "$repoDir" stash push -u -m "pre-fleet-bootstrap-backup" 2>$null | Out-Null
     git -C "$repoDir" fetch origin main
-    git -C "$repoDir" merge --ff-only origin/main
+    git -C "$repoDir" checkout -B main origin/main
+    git -C "$repoDir" reset --hard origin/main
 }
 
 # 3. Write fleet-sync.json BEFORE running install.ps1
@@ -665,19 +667,40 @@ Write-Host "   ✓ Saved $fleetSyncPath" -ForegroundColor Green
 # 4. Run repository installer (sets rules, Turbo CitC, MCP config, Gatekeeper, Silent Daemon & 1x Daily task)
 & (Join-Path $repoDir "install.ps1")
 
+# 4b. Verify legacy 30m / alternate tasks are gone; elevate once if Admin-owned task resisted non-elevated overwrite
+$needsElevation = $false
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+try {
+    $autoTask = Get-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -ErrorAction SilentlyContinue
+    if ($autoTask -and $autoTask.Triggers -and $autoTask.Triggers[0].Repetition -and $autoTask.Triggers[0].Repetition.Interval) {
+        $needsElevation = $true
+    }
+    foreach ($legacyName in @("AgyOrchestratorAutoSync", "AntigravityArchSync", "ArchitectureSync")) {
+        if (Get-ScheduledTask -TaskName $legacyName -ErrorAction SilentlyContinue) {
+            $needsElevation = $true
+        }
+    }
+} catch {}
+
+if (-not $isAdmin -and $needsElevation) {
+    Write-Host "🔐 Legacy 30-minute Scheduled Task requires Administrator privileges to replace cleanly — requesting UAC elevation..." -ForegroundColor Yellow
+    try {
+        Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File \`"$repoDir\\install.ps1\`" -SkipClis"
+    } catch {
+        Write-Host "   ⚠️ Elevation declined. Run once as Administrator: & '$repoDir\\install.ps1' -SkipClis" -ForegroundColor Yellow
+    }
+} elseif (-not $isAdmin) {
+    Write-Host ""
+    Write-Host "ℹ️  To enable full Layer 1 NT AUTHORITY\\SYSTEM Gatekeeper TCB lock, run once in Administrator PowerShell:" -ForegroundColor Yellow
+    Write-Host "   & '$repoDir\\install.ps1' -SkipClis" -ForegroundColor White
+}
+
 # 5. Send immediate ACK to Staging Fleet Hub
 $daemonJs = Join-Path $userHome ".local\\lib\\agy-fleet\\agy-sync-daemon.js"
 if ((Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path $daemonJs)) {
     try {
         node "$daemonJs" --once
     } catch {}
-}
-
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Host ""
-    Write-Host "ℹ️  To enable full Layer 1 NT AUTHORITY\\SYSTEM Gatekeeper TCB lock, run once in Administrator PowerShell:" -ForegroundColor Yellow
-    Write-Host "   & '$repoDir\\install.ps1' -SkipClis" -ForegroundColor White
 }
 
 Write-Host "✅ ${profile.label} connected to Real-Time SSE Push Hub & 1x Daily fallback!" -ForegroundColor Green
@@ -732,7 +755,7 @@ fi
 # Refresh PATH in case mise/node was already present or newly installed
 export PATH="\${HOME}/.local/share/mise/shims:\${HOME}/.local/bin:\${HOME}/.opencode/bin:\${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\${PATH:-}"
 
-# 2. Clone or fast-forward antigravity-orchestrator
+# 2. Clone or clean-update antigravity-orchestrator (stashing any old local edits first)
 DEV_DIR="\${HOME}/Development"
 REPO_DIR="\${DEV_DIR}/antigravity-orchestrator"
 mkdir -p "\$DEV_DIR"
@@ -742,8 +765,10 @@ if [ ! -d "\${REPO_DIR}/.git" ]; then
   git clone "${repoUrl}" "\$REPO_DIR"
 else
   echo "🔄 Updating \${REPO_DIR} from origin/main..."
+  git -C "\$REPO_DIR" stash push -u -m "pre-fleet-bootstrap-backup" >/dev/null 2>&1 || true
   git -C "\$REPO_DIR" fetch origin main
-  git -C "\$REPO_DIR" merge --ff-only origin/main || true
+  git -C "\$REPO_DIR" checkout -B main origin/main
+  git -C "\$REPO_DIR" reset --hard origin/main
 fi
 
 # 3. Write ~/.gemini/config/fleet-sync.json (mode 0600)

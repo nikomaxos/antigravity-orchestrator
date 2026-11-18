@@ -222,6 +222,19 @@ $syncScript = Join-Path $localBin "agy-arch-sync.ps1"
 $daemonScript = Join-Path $fleetLib "agy-sync-daemon.js"
 try {
     if (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue) {
+        # Disable & remove any legacy alternate task names cleanly
+        foreach ($legacyTask in @("AgyOrchestratorAutoSync", "AntigravityArchSync", "ArchitectureSync")) {
+            if (Get-ScheduledTask -TaskName $legacyTask -ErrorAction SilentlyContinue) {
+                Stop-ScheduledTask -TaskName $legacyTask -ErrorAction SilentlyContinue
+                Unregister-ScheduledTask -TaskName $legacyTask -Confirm:$false -ErrorAction SilentlyContinue
+                Write-Host "   ✓ Removed legacy Scheduled Task: $legacyTask" -ForegroundColor Green
+            }
+        }
+
+        if (Get-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -ErrorAction SilentlyContinue) {
+            Stop-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -ErrorAction SilentlyContinue
+        }
+
         if (Test-Path $vbsLauncher) {
             $syncAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncScript`" -Quiet"
         } else {
@@ -229,8 +242,12 @@ try {
         }
         $syncTrigger = New-ScheduledTaskTrigger -Daily -At "04:00"
         $syncSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-        Register-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -Action $syncAction -Trigger $syncTrigger -Settings $syncSettings -Force -ErrorAction SilentlyContinue | Out-Null
-        Write-Host "   ✓ Registered Scheduled Task: AntigravityOrchestratorAutoSync (1x Daily at 04:00 + StartWhenAvailable, silent)" -ForegroundColor Green
+        $regDaily = Register-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -Action $syncAction -Trigger $syncTrigger -Settings $syncSettings -Force -ErrorAction SilentlyContinue
+        if ($regDaily) {
+            Write-Host "   ✓ Registered Scheduled Task: AntigravityOrchestratorAutoSync (1x Daily at 04:00 + StartWhenAvailable, silent)" -ForegroundColor Green
+        } else {
+            Write-Host "   ⚠️ Could not overwrite Admin-owned AntigravityOrchestratorAutoSync without elevation." -ForegroundColor Yellow
+        }
 
         if ((Test-Path $daemonScript) -and (Test-Path $vbsLauncher)) {
             $pushAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" `"$nodeCmd`" `"$daemonScript`""

@@ -167,7 +167,8 @@ $syncScripts = @(
     "claude-orchestrate.sh",
     "opencode-orchestrate.sh",
     "codex-rca.sh",
-    "gemini-quota-mode.sh"
+    "gemini-quota-mode.sh",
+    "preflight.sh"
 )
 
 if (Test-Path $wsRegistry) {

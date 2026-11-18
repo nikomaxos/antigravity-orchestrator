@@ -232,9 +232,18 @@ EOF
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
+  # Disable & stop any legacy polling timers before enabling the 1x Daily + Persistent fallback
+  for legacy_timer in agy-arch-sync.timer architecture-sync.timer; do
+    if systemctl --user list-unit-files "${legacy_timer}" 2>/dev/null | grep -q "${legacy_timer}"; then
+      systemctl --user disable --now "${legacy_timer}" 2>/dev/null || true
+      echo "   ✓ Disabled legacy timer: ${legacy_timer}"
+    fi
+  done
+
   systemctl --user daemon-reload 2>/dev/null || true
-  systemctl --user enable --now agy-orchestrator-sync.timer 2>/dev/null || true
-  echo "   ✓ Enabled systemd --user timer: agy-orchestrator-sync.timer (1x Daily + Persistent)"
+  systemctl --user enable agy-orchestrator-sync.timer 2>/dev/null || true
+  systemctl --user restart agy-orchestrator-sync.timer 2>/dev/null || true
+  echo "   ✓ Enabled & restarted systemd --user timer: agy-orchestrator-sync.timer (1x Daily + Persistent)"
   if [ -f "${SYSTEMD_USER_DIR}/agy-sync-daemon.service" ] && [ -f "${HOME}/.gemini/config/fleet-sync.json" ]; then
     systemctl --user enable --now agy-sync-daemon.service 2>/dev/null || true
     systemctl --user restart agy-sync-daemon.service 2>/dev/null || true
@@ -242,6 +251,20 @@ if command -v systemctl >/dev/null 2>&1; then
   elif [ -f "${SYSTEMD_USER_DIR}/agy-sync-daemon.service" ]; then
     systemctl --user enable agy-sync-daemon.service 2>/dev/null || true
     echo "   ℹ️ Enabled agy-sync-daemon.service (will connect once ~/.gemini/config/fleet-sync.json is configured)"
+  fi
+fi
+
+# Strip any legacy crontab polling lines calling agy-arch-sync or architecture-sync
+if command -v crontab >/dev/null 2>&1; then
+  EXISTING_CRON=$(crontab -l 2>/dev/null || true)
+  if grep -qE 'agy-arch-sync|architecture-sync' <<< "$EXISTING_CRON"; then
+    FILTERED_CRON=$(grep -vE 'agy-arch-sync|architecture-sync' <<< "$EXISTING_CRON" || true)
+    if [ -n "$FILTERED_CRON" ]; then
+      printf '%s\n' "$FILTERED_CRON" | crontab - 2>/dev/null || true
+    else
+      crontab -r 2>/dev/null || true
+    fi
+    echo "   ✓ Removed legacy cron entries for agy-arch-sync / architecture-sync"
   fi
 fi
 
