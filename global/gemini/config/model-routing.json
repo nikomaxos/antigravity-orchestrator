@@ -1,6 +1,6 @@
 {
-  "schema_version": "2026.11.3",
-  "updated_at": "2026-11-18T11:00:00Z",
+  "schema_version": "2026.11.4",
+  "updated_at": "2026-11-19T00:00:00Z",
   "fleet_sync": {
     "mode": "sse-push+daily-fallback",
     "daily_interval_seconds": 86400,
@@ -17,7 +17,23 @@
           "display_name": "Orchestrator (Carbon -> Hydrogen)",
           "alias": "gemini-pro-orchestrator",
           "default_effort": "medium",
-          "role": "Two-phase UI Orchestrator Default: Gemini 4 Carbon plans -> Gemini 4 Hydrogen executes via exit_plan_mode (19% faster, ~24% less quota)"
+          "role": "Two-phase Flagship UI Orchestrator: Gemini 4 Carbon plans -> Gemini 4 Hydrogen executes via exit_plan_mode (19% faster, ~24% less quota)"
+        },
+        "t0_orchestrator_neon": {
+          "id": "gemini-pro-orchestrator-neon",
+          "fallback_id": "gemini-4-neon-medium",
+          "display_name": "Orchestrator (Neon -> Hydrogen)",
+          "alias": "gemini-pro-orchestrator-neon",
+          "default_effort": "medium",
+          "role": "Two-phase Balanced UI Orchestrator: Gemini 4 Neon plans (-25% planning burn vs Carbon, #2 Agent Arena & Steerability) -> Gemini 4 Hydrogen executes via exit_plan_mode"
+        },
+        "t0_orchestrator_argon": {
+          "id": "gemini-pro-orchestrator-argon",
+          "fallback_id": "gemini-4-argon-medium",
+          "display_name": "Orchestrator (Argon -> Hydrogen)",
+          "alias": "gemini-pro-orchestrator-argon",
+          "default_effort": "medium",
+          "role": "Two-phase Compliance UI Orchestrator: Gemini 4 Argon plans -> Gemini 4 Hydrogen executes via exit_plan_mode"
         },
         "t1_explorer": {
           "id": "gemini-4-hydrogen-low",
@@ -25,21 +41,37 @@
           "legacy_subagent_enum_id": "gemini-3.8-flash-low",
           "subagent_model": "inherit_on_hydrogen_or_flash_from_carbon",
           "default_effort": "low",
-          "role": "Primary T1 Fast Explorer / Triage / Docs (2.5x faster, 57% vs 18.2% Terminal-Bench 4.1, >5x fewer hallucinations; use invoke_subagent Model='flash' only for browser subagent or bulk raw I/O from non-Orchestrator Carbon turns)"
+          "role": "Primary T1 Fast Explorer / Triage / Docs (2.5x faster, 57% vs 18.2% Terminal-Bench 4.1, >5x fewer hallucinations; use invoke_subagent Model='flash' only for browser subagent or bulk raw I/O from non-Orchestrator Carbon/Neon/Argon turns)"
         },
         "t2_coding": {
           "id": "gemini-4-hydrogen-medium",
+          "fallback_id": "gemini-4-neon-medium",
           "display_name": "Gemini 4 Hydrogen (Medium)",
           "default_effort": "medium",
           "supported_efforts": ["low", "medium", "high"],
           "role": "Primary Native T2 Coding, Patch Application & Test Workhorse (replaces 3.8 Flash Executor)"
         },
+        "t2_neon_coding": {
+          "id": "gemini-4-neon-medium",
+          "display_name": "Gemini 4 Neon (Low/Medium)",
+          "default_effort": "medium",
+          "supported_efforts": ["low", "medium", "high", "xhigh"],
+          "role": "Balanced Native T2 Fallback for complex UI state & high steerability (#2 Steerability, -25% vs Carbon)"
+        },
         "t3_refactoring": {
           "id": "gemini-4-hydrogen-high",
           "display_name": "Gemini 4 Hydrogen (High)",
-          "fallback_id": "gemini-4-carbon-medium",
+          "fallback_id": "gemini-4-neon-high",
           "default_effort": "high",
-          "role": "Primary Native T3 Multi-File Coding, Refactoring & Integration Executor (replaces 3.8 Flash Executor)"
+          "role": "Primary Native T3 Multi-File Coding, Refactoring & Integration Executor (escalates to Gemini 4 Neon High before Carbon)"
+        },
+        "t3_neon_specialist": {
+          "id": "gemini-4-neon-high",
+          "fallback_id": "gemini-4-carbon-medium",
+          "display_name": "Gemini 4 Neon (High)",
+          "default_effort": "high",
+          "supported_efforts": ["low", "medium", "high", "xhigh"],
+          "role": "Primary Native Pool A T3 Multi-File Coding, Refactoring & Architecture Fallback (65.2% Terminal-Bench 4.1, 39.0% SWE-sweep, -25% vs Carbon)"
         },
         "t4_deep": {
           "id": "gemini-4-carbon-high",
@@ -48,12 +80,19 @@
           "default_effort": "high",
           "role": "Deep Architecture / Concurrency / Security & Final Fallback"
         },
+        "t4_neon_swe": {
+          "id": "gemini-4-neon-xhigh",
+          "fallback_id": "gemini-4-carbon-high",
+          "display_name": "Gemini 4 Neon (XHigh)",
+          "default_effort": "xhigh",
+          "role": "T4 Deep Multi-File SWE Debugging, Complex Refactoring & High-Steerability Execution (65.2% Terminal-Bench 4.1, 0.0% shortcut rate, AA Intelligence 61)"
+        },
         "t4_deep_iterative": {
           "id": "gemini-4-hydrogen-xhigh",
-          "fallback_id": "gemini-4-hydrogen-high",
+          "fallback_id": "gemini-4-neon-xhigh",
           "display_name": "Gemini 4 Hydrogen xhigh",
           "default_effort": "xhigh",
-          "role": "Deep repo-wide iterative code debugging"
+          "role": "Rapid multi-step iterative debugging loops"
         },
         "t4_compliance": {
           "id": "gemini-4-argon-high",
@@ -250,17 +289,20 @@
     "r1": {
       "pool_b": {"model": "gpt-6.1-terra", "effort": "medium"},
       "pool_c": {"model": "claude-sonnet-5-5", "fallback": "sonnet", "effort": "medium"},
-      "pool_d": {"model": "deepseek/deepseek-v4-pro"}
+      "pool_d": {"model": "deepseek/deepseek-v4-pro"},
+      "pool_a_fallback": {"model": "gemini-4-hydrogen-medium", "effort": "medium"}
     },
     "r2": {
       "pool_b": {"model": "gpt-6.1-sol", "effort": "high"},
       "pool_c": {"model": "claude-sonnet-5-5", "fallback": "sonnet", "effort": "high"},
-      "pool_d": {"model": "deepseek/deepseek-v4-pro"}
+      "pool_d": {"model": "deepseek/deepseek-v4-pro"},
+      "pool_a_fallback": {"model": "gemini-4-neon-high", "effort": "high"}
     },
     "r3": {
       "pool_b": {"model": "gpt-6-astra", "effort": "high"},
       "pool_c": {"model": "claude-opus-5-5", "fallback": "opus", "effort": "high"},
-      "pool_d": {"model": "deepseek/deepseek-v4-pro"}
+      "pool_d": {"model": "deepseek/deepseek-v4-pro"},
+      "pool_a_fallback": {"model": "gemini-4-carbon-high", "effort": "high"}
     }
   },
   "rca_cascade": [

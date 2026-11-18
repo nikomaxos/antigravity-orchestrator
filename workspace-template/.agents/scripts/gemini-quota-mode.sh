@@ -79,7 +79,7 @@ case "$MODE" in
       exit 1
     fi
     write_state_atomic "true" "$PCT"
-    echo "🚨 GEMINI RESERVE PASS-THROUGH MODE ACTIVATED (Remaining=${PCT}% < ${THRESHOLD_PCT}%). ALL Gemini models (including Hydrogen & 3.8 Flash) are replaced by Pools B/C/D."
+    echo "🚨 GEMINI RESERVE PASS-THROUGH MODE ACTIVATED (Remaining=${PCT}% < ${THRESHOLD_PCT}%). ALL Gemini models (including Carbon, Neon, Hydrogen, Argon & 3.8 Flash) are replaced by Pools B/C/D."
     ;;
   --set-normal)
     PCT="${2:-100}"

@@ -41,7 +41,7 @@ const BRAIN_DIR = process.env.AGY_BRAIN_DIR || path.join(USER_HOME, '.gemini', '
 const CACHE_FILE = process.env.AGY_GEMINI_BUDGET_CACHE || path.join(CONFIG_DIR, '.gemini-budget-cache.json');
 const GUARD_STATE_FILE = process.env.AGY_GEMINI_GUARD_STATE || path.join(CONFIG_DIR, '.gemini-guard-state.json');
 const HOUR = 3600 * 1000;
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 // Calibrated 2026-11-18 from the real 5h-limit exhaustion event (see --calibrate).
 const DEFAULT_GUARD = {
@@ -140,6 +140,27 @@ function parsePlannerLine(line) {
   return [ts, inp, cr, outp, model ? String(model) : ''];
 }
 
+function parseCompactResetTs(line) {
+  // Fast pre-filter before JSON.parse; authoritative USER_INPUT check follows below.
+  if (line.indexOf('"USER_INPUT"') === -1 || line.indexOf('/compact') === -1) return null;
+  let j;
+  try {
+    j = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!j || j.type !== 'USER_INPUT' || typeof j.content !== 'string') return null;
+  const trimmed = j.content.trim();
+  const isCompact =
+    /^\/compact(\s|$)/i.test(trimmed) ||
+    /^(?:<CONTEXT_SUMMARY>[\s\S]*?<\/CONTEXT_SUMMARY>\s*)?<USER_REQUEST>\s*\/compact(?:\s|<\/USER_REQUEST>|$)/i.test(
+      trimmed
+    );
+  if (!isCompact) return null;
+  const ts = Date.parse(j.created_at || '');
+  return Number.isFinite(ts) ? ts : null;
+}
+
 function scanFile(entry, cached, keepSinceMs) {
   let rec = cached;
   let headSig = '';
@@ -165,11 +186,18 @@ function scanFile(entry, cached, keepSinceMs) {
         const text = buf.toString('utf8', 0, lastNl);
         for (const line of text.split('\n')) {
           const ev = parsePlannerLine(line);
-          if (!ev) continue;
-          rec.events.push(ev);
-          if (ev[0] >= rec.lastTs) {
-            rec.lastTs = ev[0];
-            rec.lastCtx = ev[1] + ev[2];
+          if (ev) {
+            rec.events.push(ev);
+            if (ev[0] >= rec.lastTs) {
+              rec.lastTs = ev[0];
+              rec.lastCtx = ev[1] + ev[2];
+            }
+            continue;
+          }
+          const compactTs = parseCompactResetTs(line);
+          if (compactTs !== null && compactTs >= rec.lastTs) {
+            rec.lastTs = compactTs;
+            rec.lastCtx = 0;
           }
         }
         rec.offset += lastNl + 1;
@@ -537,7 +565,7 @@ function hookFragment(input = {}, repoRoot) {
     keys.push('reserve');
     msgs.push(
       `🚨 ZERO-GEMINI RESERVE ACTIVE (source=${applied.source}, metered Gemini remaining=${rem}% | 5h used ${fmtK(w5.used_tokens)}/${fmtK(w5.budget_tokens || 0)}). ` +
-        'MANDATORY: do NOT call invoke_subagent or swarm with ANY Gemini model (Carbon/Hydrogen/Argon/3.8 Flash, incl. Model "inherit"/"flash"/"pro"). ' +
+        'MANDATORY: do NOT call invoke_subagent or swarm with ANY Gemini model (Carbon/Neon/Hydrogen/Argon/3.8 Flash, incl. Orchestrator & Model "inherit"/"flash"/"pro"). ' +
         'Route ALL hands-on work via external pools: T1 `bash .agents/scripts/frontier-orchestrate.sh --tier flash`, T2 `--tier ui`, T3 `--tier backend`, T4 `--tier deep` (Pools B/C/D). ' +
         'Keep parent turns minimal (1-step pass-through, no large reads/greps in parent context). ' +
         (onGemini
