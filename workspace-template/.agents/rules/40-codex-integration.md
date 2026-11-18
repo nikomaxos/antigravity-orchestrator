@@ -18,7 +18,7 @@ Three external frontier CLIs are wired alongside Antigravity across **4 orthogon
 - **`R3` (Critical Paths or `>= 350` lines)**: Triggered automatically on `.lua`, Flyway `V*__*.sql`, `SmscConnectionManager`, `Smpp*`, `RateLimit*`, `RfSegment*`, `RfCapacity*`, `FallbackScheduler`, `SmsInboundConsumer`, `SmsOutbound*`, `Ejoin*`, `SecurityConfig`, `Jwt*`, `Auth*`, `EncryptionService`, `apisix`, `deploy-k8s`, `docker-compose`, `.agents/scripts/`, or `.agents/hooks.json`. Routes to `gpt-6-astra (high)` or `claude-opus-5-5 (high)`.
 
 ## Dynamic Model Routing (`model-routing.json`) & Auto-Sync
-All orchestration and review scripts dynamically read models and reasoning efforts from `${MODEL_ROUTING_FILE:-$HOME/.gemini/config/model-routing.json}` (falling back to `.agents/config/model-routing.json`). The multi-machine matrix is synchronized automatically via `agy-arch-sync` (every 30m via systemd timer / Scheduled Task and `<2ms` preflight trigger).
+All orchestration and review scripts dynamically read models and reasoning efforts from `${MODEL_ROUTING_FILE:-$HOME/.gemini/config/model-routing.json}` (falling back to `.agents/config/model-routing.json`). The multi-machine matrix is pushed in real time via `agy-sync-daemon` (outbound SSE Push from `agy-fleet-hub` + `agy-fleet` MCP) and backed by a `1x Daily` (`86400s`) `systemd --user` / Scheduled Task and preflight safety fallback.
 
 ## Mandatory Rules
 

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Antigravity Fleet Push Trigger (`architecture-push`)
+# =============================================================================
+# Pushes antigravity-orchestrator commits (if origin/main is reachable) and triggers
+# immediate SSE broadcast via the Staging Fleet Push Hub (`POST /api/agy-fleet/publish`).
+# =============================================================================
+set -euo pipefail
+
+USER_HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
+REPO_DIR="${USER_HOME}/Development/antigravity-orchestrator"
+[ ! -d "$REPO_DIR" ] && REPO_DIR="${USER_HOME}/.local/share/antigravity-orchestrator"
+FLEET_CFG="${USER_HOME}/.gemini/config/fleet-sync.json"
+
+if [ -d "${REPO_DIR}/.git" ]; then
+  if git -C "$REPO_DIR" remote get-url origin >/dev/null 2>&1; then
+    AHEAD=$(git -C "$REPO_DIR" rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+    if [ "$AHEAD" -gt 0 ]; then
+      echo "⬆️  Pushing ${AHEAD} local commit(s) to origin/main..."
+      git -C "$REPO_DIR" push origin main
+    fi
+  fi
+fi
+
+if [ ! -f "$FLEET_CFG" ]; then
+  echo "❌ Fleet config not found at ${FLEET_CFG}. Configure Hub URL & fleetToken first." >&2
+  exit 1
+fi
+
+HUB_URL=$(jq -r '.hubUrl // empty' "$FLEET_CFG" 2>/dev/null || echo "")
+TOKEN=$(jq -r '.fleetToken // empty' "$FLEET_CFG" 2>/dev/null || echo "")
+HUB_URL="${HUB_URL%/}"
+
+if [ -z "$HUB_URL" ] || [ -z "$TOKEN" ]; then
+  echo "❌ Invalid ${FLEET_CONFIG:-$FLEET_CFG}: missing hubUrl or fleetToken." >&2
+  exit 1
+fi
+
+echo "📡 Broadcasting real-time SSE sync push via ${HUB_URL}/publish..."
+RESP=$(curl -fsSL -X POST "${HUB_URL}/publish" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{}')
+
+if command -v jq >/dev/null 2>&1; then
+  echo "$RESP" | jq '{ok, commit, schemaVersion, broadcastedCount, acks, nodes: [.nodes[] | {nodeId, online, inSync, lastSyncStatus, commit: (.commit // "none")[0:8]}]}'
+else
+  echo "$RESP"
+fi

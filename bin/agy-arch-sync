@@ -122,6 +122,45 @@ if [ -d "${REPO_DIR}/global/gemini/config/workflows" ]; then
   cp -r "${REPO_DIR}/global/gemini/config/workflows/"* "${CONFIG_DIR}/global_workflows/" 2>/dev/null || true
 fi
 
+# Sync helper binaries & fleet daemon/MCP scripts
+if [ -d "${REPO_DIR}/bin" ]; then
+  mkdir -p "${USER_HOME}/.local/bin"
+  for b in agy-arch-sync agy-init-workspace agy-setup-clis architecture-sync architecture-push frontier-orchestrate gemini-quota-mode; do
+    if [ -f "${REPO_DIR}/bin/${b}" ]; then
+      cp -f "${REPO_DIR}/bin/${b}" "${USER_HOME}/.local/bin/${b}"
+      chmod +x "${USER_HOME}/.local/bin/${b}" 2>/dev/null || true
+    fi
+  done
+fi
+
+FLEET_LIB="${USER_HOME}/.local/lib/agy-fleet"
+if [ -d "${REPO_DIR}/fleet" ]; then
+  mkdir -p "$FLEET_LIB"
+  cp -f "${REPO_DIR}/fleet/"* "$FLEET_LIB/" 2>/dev/null || true
+  chmod +x "${FLEET_LIB}/"*.js 2>/dev/null || true
+fi
+
+# Migrate legacy 30m systemd timer to 1x Daily if still configured
+TIMER_FILE="${USER_HOME}/.config/systemd/user/agy-orchestrator-sync.timer"
+if [ -f "$TIMER_FILE" ] && grep -q "OnUnitActiveSec=30min" "$TIMER_FILE" 2>/dev/null; then
+  cat > "$TIMER_FILE" <<EOF
+[Unit]
+Description=Run Antigravity Orchestrator Architecture Sync once daily (safety fallback)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=120
+Unit=agy-orchestrator-sync.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl --user daemon-reload 2>/dev/null || true
+  systemctl --user restart agy-orchestrator-sync.timer 2>/dev/null || true
+  log "   -> Migrated agy-orchestrator-sync.timer from 30m to 1x Daily (Persistent)"
+fi
+
 # 2. Sync registered workspaces
 SYNC_SCRIPTS=(
   "codex-lib.sh"

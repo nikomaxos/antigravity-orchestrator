@@ -153,6 +153,49 @@ if (Test-Path $binSource) {
     Write-Host "   ✓ Copied bin tools into $localBin" -ForegroundColor Green
 }
 
+# Install Fleet Push Daemon & MCP Server into ~/.local/lib/agy-fleet
+$fleetLib = Join-Path $userHome ".local\lib\agy-fleet"
+New-Item -ItemType Directory -Path $fleetLib -Force | Out-Null
+$srcFleet = Join-Path $scriptDir "fleet"
+if (Test-Path $srcFleet) {
+    Copy-Item -Path "$srcFleet\*" -Destination $fleetLib -Recurse -Force
+    Write-Host "   ✓ Copied fleet daemon & MCP tools into $fleetLib" -ForegroundColor Green
+}
+
+# Resolve Node executable early so MCP & Silent Push Daemon use exact path
+$nodeCmd = "node.exe"
+$foundNode = Get-Command node -ErrorAction SilentlyContinue
+if ($foundNode) {
+    $nodeCmd = $foundNode.Source
+}
+
+# Register agy-fleet Stdio MCP Server inside ~/.gemini/config/mcp_config.json
+$mcpConfigPath = Join-Path $geminiConfigDir "mcp_config.json"
+$mcpScriptPath = Join-Path $fleetLib "agy-fleet-mcp.js"
+if (Test-Path $mcpScriptPath) {
+    try {
+        $mcpObj = [PSCustomObject]@{ mcpServers = [PSCustomObject]@{} }
+        if (Test-Path $mcpConfigPath) {
+            try {
+                $parsedMcp = Get-Content -Path $mcpConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($parsedMcp) { $mcpObj = $parsedMcp }
+            } catch {}
+        }
+        if (-not $mcpObj.PSObject.Properties["mcpServers"] -or -not $mcpObj.mcpServers) {
+            $mcpObj | Add-Member -MemberType NoteProperty -Name "mcpServers" -Value ([PSCustomObject]@{}) -Force
+        }
+        $serverDef = [PSCustomObject]@{
+            command = $nodeCmd
+            args = @($mcpScriptPath)
+        }
+        $mcpObj.mcpServers | Add-Member -MemberType NoteProperty -Name "agy-fleet" -Value $serverDef -Force
+        $mcpObj | ConvertTo-Json -Depth 10 | Set-Content -Path $mcpConfigPath -Encoding UTF8
+        Write-Host "   ✓ Registered MCP server 'agy-fleet' in $mcpConfigPath" -ForegroundColor Green
+    } catch {
+        Write-Host "   ⚠️ Failed updating mcp_config.json: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
 # Cache workspace-template permanently in ~/.local/share
 $localShare = Join-Path $userHome ".local\share\antigravity-orchestrator"
 New-Item -ItemType Directory -Path $localShare -Force | Out-Null
@@ -171,6 +214,57 @@ if ($userPath -notlike "*$localBin*") {
     Write-Host "   ✓ Added $localBin to User PATH environment variable" -ForegroundColor Green
 } else {
     Write-Host "   ℹ️ $localBin is already in User PATH" -ForegroundColor DarkGray
+}
+
+# Register 1x Daily AutoSync Fallback & Silent AtLogOn SSE Push Daemon (Zero console popups via wscript.exe)
+$vbsLauncher = Join-Path $fleetLib "agy-silent-launch.vbs"
+$syncScript = Join-Path $localBin "agy-arch-sync.ps1"
+$daemonScript = Join-Path $fleetLib "agy-sync-daemon.js"
+try {
+    if (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue) {
+        if (Test-Path $vbsLauncher) {
+            $dailyInner = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncScript`" -Quiet"
+            $syncAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" `"$($dailyInner.Replace('"', '""'))`""
+        } else {
+            $syncAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$syncScript`" -Quiet"
+        }
+        $syncTrigger = New-ScheduledTaskTrigger -Daily -At "04:00"
+        $syncSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        Register-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -Action $syncAction -Trigger $syncTrigger -Settings $syncSettings -Force -ErrorAction SilentlyContinue | Out-Null
+        Write-Host "   ✓ Registered Scheduled Task: AntigravityOrchestratorAutoSync (1x Daily at 04:00 + StartWhenAvailable, silent)" -ForegroundColor Green
+
+        if ((Test-Path $daemonScript) -and (Test-Path $vbsLauncher)) {
+            $daemonInner = "`"$nodeCmd`" `"$daemonScript`""
+            $pushAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" `"$($daemonInner.Replace('"', '""'))`""
+            $pushTrigger = New-ScheduledTaskTrigger -AtLogOn
+            $pushSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Days 3650)
+            Register-ScheduledTask -TaskName "AntigravityFleetPushDaemon" -Action $pushAction -Trigger $pushTrigger -Settings $pushSettings -Force -ErrorAction SilentlyContinue | Out-Null
+            Write-Host "   ✓ Registered Scheduled Task: AntigravityFleetPushDaemon (AtLogOn silent SSE Push Daemon)" -ForegroundColor Green
+        }
+    }
+} catch {}
+
+# Start / refresh silent SSE Push Daemon immediately when fleet-sync.json exists
+$fleetSyncJson = Join-Path $geminiConfigDir "fleet-sync.json"
+$daemonPidFile = Join-Path $geminiConfigDir ".agy-sync-daemon.pid"
+if ((Test-Path $fleetSyncJson) -and (Test-Path $daemonScript) -and $foundNode) {
+    $daemonAlreadyUp = $false
+    if (Test-Path $daemonPidFile) {
+        try {
+            $oldPid = [int](Get-Content -Path $daemonPidFile -Raw -Encoding UTF8).Trim()
+            if ($oldPid -gt 0 -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
+                $daemonAlreadyUp = $true
+            }
+        } catch {}
+    }
+    if (-not $daemonAlreadyUp) {
+        try {
+            Start-Process -FilePath $nodeCmd -ArgumentList "`"$daemonScript`"" -WindowStyle Hidden
+            Write-Host "   ✓ Started silent SSE Push Daemon (agy-sync-daemon.js)" -ForegroundColor Green
+        } catch {}
+    } else {
+        Write-Host "   ✓ Silent SSE Push Daemon is already running" -ForegroundColor Green
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -196,13 +290,6 @@ Copy-Item -Path (Join-Path $scriptDir "workspace-template\.agents\hooks.json") -
 Copy-Item -Path (Join-Path $scriptDir "gatekeeper\shim\*") -Destination (Join-Path $targetGatekeeperDir "shim") -Recurse -Force
 Write-Host "   ✓ Installed Gatekeeper daemon at $targetGatekeeperDir\server.js" -ForegroundColor Green
 
-# Resolve node executable path
-$nodeCmd = "node.exe"
-$foundNode = Get-Command node -ErrorAction SilentlyContinue
-if ($foundNode) {
-    $nodeCmd = $foundNode.Source
-}
-
 if ($isAdmin) {
     Write-Host "🔒 Applying Layer 1 NT AUTHORITY\SYSTEM Privileged TCB Locks..." -ForegroundColor Cyan
     $gateKey = Join-Path $targetGatekeeperDir "gate.key"
@@ -225,25 +312,6 @@ if ($isAdmin) {
             $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5) -ExecutionTimeLimit (New-TimeSpan -Days 3650)
             Register-ScheduledTask -TaskName "AntigravityGatekeeper" -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -User "NT AUTHORITY\SYSTEM" -RunLevel Highest -Force -ErrorAction SilentlyContinue | Out-Null
             Write-Host "   ✓ Registered Scheduled Task: AntigravityGatekeeper (NT AUTHORITY\SYSTEM, Highest)" -ForegroundColor Green
-        }
-    } catch {}
-
-    # Register 30-minute AutoSync Scheduled Task
-    try {
-        if (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue) {
-            $syncScript = Join-Path $localBin "agy-arch-sync.ps1"
-            $syncAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -File `"$syncScript`" -Quiet"
-            $syncTrigger = New-ScheduledTaskTrigger -Daily -At "00:00"
-            $syncSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-            $regTask = Register-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -Action $syncAction -Trigger $syncTrigger -Settings $syncSettings -Force -ErrorAction SilentlyContinue
-            if ($regTask) {
-                try {
-                    $ts = Get-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync"
-                    $ts.Triggers[0].Repetition.Interval = "PT30M"
-                    $ts | Set-ScheduledTask | Out-Null
-                } catch {}
-            }
-            Write-Host "   ✓ Registered Scheduled Task: AntigravityOrchestratorAutoSync (every 30m)" -ForegroundColor Green
         }
     } catch {}
 

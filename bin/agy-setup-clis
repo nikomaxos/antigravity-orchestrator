@@ -53,7 +53,8 @@ install_clis() {
   for tool in jq curl node npm; do
     if ! check_command "$tool"; then
       echo "⚠️  Missing prerequisite: $tool"
-      echo "   Please install via your package manager, e.g.: sudo apt update && sudo apt install -y jq curl nodejs npm"
+      echo "   Install via Arch/Omarchy: sudo pacman -S --needed jq curl git nodejs npm"
+      echo "   Or Debian/Ubuntu:       sudo apt update && sudo apt install -y jq curl nodejs npm"
     else
       echo "   ✓ $tool is installed ($(command -v "$tool"))"
     fi
@@ -168,7 +169,7 @@ test_clis() {
   # Test Pool B: Codex
   if check_command codex || [ -x "${HOME}/.npm-global/bin/codex" ]; then
     echo "⏳ Testing Pool B (Codex CLI)..."
-    if timeout 10 codex exec -s read-only -m gpt-5.6-terra -c "model_reasoning_effort=\"medium\"" -c "features.multi_agent=false" --json - <<< "Hello" >/dev/null 2>&1; then
+    if timeout 10 codex exec -s read-only -m gpt-6.1-terra -c "model_reasoning_effort=\"medium\"" -c "features.multi_agent=false" --json - <<< "Hello" >/dev/null 2>&1; then
       b_status="✓ OK (Authenticated & Ready)"
     elif codex login status 2>&1 | grep -qi "Logged in"; then
       b_status="✓ Authenticated (ChatGPT Plus — Quota resets soon)"

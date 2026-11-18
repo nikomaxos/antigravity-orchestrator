@@ -1,6 +1,11 @@
 {
-  "schema_version": "2026.11.2",
-  "updated_at": "2026-11-17T16:20:00Z",
+  "schema_version": "2026.11.3",
+  "updated_at": "2026-11-18T09:45:00Z",
+  "fleet_sync": {
+    "mode": "sse-push+daily-fallback",
+    "daily_interval_seconds": 86400,
+    "mcp_server": "agy-fleet"
+  },
   "pools": {
     "pool_a": {
       "name": "Antigravity Native Gemini",

@@ -124,6 +124,42 @@ if (Test-Path $srcWorkflows) {
     Copy-Item -Path "$srcWorkflows\*" -Destination $destGlobalWorkflows -Recurse -Force
 }
 
+# Sync helper binaries & fleet daemon/MCP scripts
+$localBin = Join-Path $userHome ".local\bin"
+New-Item -ItemType Directory -Path $localBin -Force | Out-Null
+$srcBin = Join-Path $repoDir "bin"
+if (Test-Path $srcBin) {
+    Copy-Item -Path "$srcBin\*" -Destination $localBin -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$fleetLib = Join-Path $userHome ".local\lib\agy-fleet"
+$srcFleet = Join-Path $repoDir "fleet"
+if (Test-Path $srcFleet) {
+    New-Item -ItemType Directory -Path $fleetLib -Force | Out-Null
+    Copy-Item -Path "$srcFleet\*" -Destination $fleetLib -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Migrate legacy 30-minute Scheduled Task to 1x Daily (silent via wscript.exe)
+try {
+    if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+        $existingTask = Get-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -ErrorAction SilentlyContinue
+        if ($existingTask -and $existingTask.Triggers -and $existingTask.Triggers[0].Repetition -and $existingTask.Triggers[0].Repetition.Interval -eq "PT30M") {
+            $vbsLauncher = Join-Path $fleetLib "agy-silent-launch.vbs"
+            $syncPs1 = Join-Path $localBin "agy-arch-sync.ps1"
+            if (Test-Path $vbsLauncher) {
+                $inner = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncPs1`" -Quiet"
+                $newAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" `"$($inner.Replace('"', '""'))`""
+            } else {
+                $newAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncPs1`" -Quiet"
+            }
+            $newTrigger = New-ScheduledTaskTrigger -Daily -At "04:00"
+            $newSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+            Register-ScheduledTask -TaskName "AntigravityOrchestratorAutoSync" -Action $newAction -Trigger $newTrigger -Settings $newSettings -Force -ErrorAction SilentlyContinue | Out-Null
+            Write-Log "   -> Migrated AntigravityOrchestratorAutoSync Scheduled Task from 30m to 1x Daily (silent)" "Green"
+        }
+    }
+} catch {}
+
 # 2. Sync registered workspaces
 $syncScripts = @(
     "codex-lib.sh",

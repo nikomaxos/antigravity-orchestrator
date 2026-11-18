@@ -11,7 +11,7 @@
 set -euo pipefail
 
 export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "/home/nick")}"
-export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
+export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -104,11 +104,13 @@ cp -f "${SCRIPT_DIR}/bin/agy-setup-clis" "${HOME}/.local/bin/agy-setup-clis"
 cp -f "${SCRIPT_DIR}/bin/architecture-sync" "${HOME}/.local/bin/architecture-sync"
 cp -f "${SCRIPT_DIR}/bin/architecture-sync.ps1" "${HOME}/.local/bin/architecture-sync.ps1" 2>/dev/null || true
 cp -f "${SCRIPT_DIR}/bin/architecture-sync.cmd" "${HOME}/.local/bin/architecture-sync.cmd" 2>/dev/null || true
+cp -f "${SCRIPT_DIR}/bin/architecture-push" "${HOME}/.local/bin/architecture-push" 2>/dev/null || true
 chmod +x "${HOME}/.local/bin/agy-init-workspace" \
          "${HOME}/.local/bin/agy-arch-sync" \
          "${HOME}/.local/bin/frontier-orchestrate" \
          "${HOME}/.local/bin/agy-setup-clis" \
-         "${HOME}/.local/bin/architecture-sync"
+         "${HOME}/.local/bin/architecture-sync" \
+         "${HOME}/.local/bin/architecture-push" 2>/dev/null || true
 echo "   ✓ ~/.local/bin/agy-init-workspace"
 echo "   ✓ ~/.local/bin/agy-init-workspace.ps1"
 echo "   ✓ ~/.local/bin/agy-arch-sync"
@@ -118,12 +120,48 @@ echo "   ✓ ~/.local/bin/frontier-orchestrate.ps1"
 echo "   ✓ ~/.local/bin/agy-setup-clis"
 echo "   ✓ ~/.local/bin/architecture-sync"
 echo "   ✓ ~/.local/bin/architecture-sync.ps1"
+echo "   ✓ ~/.local/bin/architecture-push"
+
+# 4b. Install Fleet Push Daemon & MCP Server into ~/.local/lib/agy-fleet/
+FLEET_LIB="${HOME}/.local/lib/agy-fleet"
+mkdir -p "$FLEET_LIB"
+if [ -d "${SCRIPT_DIR}/fleet" ]; then
+  cp -f "${SCRIPT_DIR}/fleet/"* "$FLEET_LIB/" 2>/dev/null || true
+  chmod +x "${FLEET_LIB}/"*.js 2>/dev/null || true
+  echo "   ✓ ~/.local/lib/agy-fleet/ (agy-sync-daemon.js, agy-fleet-mcp.js, agy-fleet-hub.js)"
+fi
+
+# Resolve Node binary path cleanly across mise (Omarchy/Arch) and distro paths
+NODE_BIN=""
+for cand in "${HOME}/.local/share/mise/shims/node" "$(command -v node 2>/dev/null || true)" "/usr/bin/node" "/usr/local/bin/node"; do
+  if [ -n "$cand" ] && [ -x "$cand" ]; then
+    NODE_BIN="$cand"
+    break
+  fi
+done
+
+# Register agy-fleet Stdio MCP server in ~/.gemini/config/mcp_config.json
+MCP_CFG="${HOME}/.gemini/config/mcp_config.json"
+MCP_SCRIPT="${FLEET_LIB}/agy-fleet-mcp.js"
+if [ -n "$NODE_BIN" ] && [ -f "$MCP_SCRIPT" ]; then
+  "$NODE_BIN" -e '
+const fs = require("fs");
+const [cfgPath, nodeBin, mcpScript] = process.argv.slice(1);
+let data = { mcpServers: {} };
+try {
+  if (fs.existsSync(cfgPath)) data = JSON.parse(fs.readFileSync(cfgPath, "utf8") || "{}");
+} catch { data = {}; }
+if (!data.mcpServers || typeof data.mcpServers !== "object") data.mcpServers = {};
+data.mcpServers["agy-fleet"] = { command: nodeBin, args: [mcpScript] };
+fs.writeFileSync(cfgPath, JSON.stringify(data, null, 2) + "\n", "utf8");
+' "$MCP_CFG" "$NODE_BIN" "$MCP_SCRIPT" 2>/dev/null && echo "   ✓ Registered MCP server 'agy-fleet' in ${MCP_CFG}" || true
+fi
 
 # Ensure PATH in shell startup
 for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
   if [ -f "$rc" ]; then
     if ! grep -q '\.local/bin' "$rc" 2>/dev/null; then
-      echo 'export PATH="${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:${PATH}"' >> "$rc"
+      echo 'export PATH="${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:${PATH}"' >> "$rc"
     fi
   fi
 done
@@ -132,44 +170,79 @@ done
 WS_REG="${HOME}/.gemini/config/orchestrator-workspaces.json"
 DEFAULT_WS="${HOME}/Development/messaging-agent"
 if [ ! -f "$WS_REG" ]; then
-  echo "[\"${DEFAULT_WS}\"]" > "$WS_REG"
-  echo "   ✓ Created workspace registry with ${DEFAULT_WS}"
-elif command -v jq >/dev/null 2>&1; then
+  if [ -d "$DEFAULT_WS" ]; then
+    echo "[\"${DEFAULT_WS}\"]" > "$WS_REG"
+    echo "   ✓ Created workspace registry with ${DEFAULT_WS}"
+  else
+    echo "[]" > "$WS_REG"
+  fi
+elif [ -d "$DEFAULT_WS" ] && command -v jq >/dev/null 2>&1; then
   TMP_WS=$(mktemp)
   jq --arg ws "$DEFAULT_WS" 'if index($ws) then . else . + [$ws] end' "$WS_REG" > "$TMP_WS" 2>/dev/null && mv "$TMP_WS" "$WS_REG" || rm -f "$TMP_WS"
   echo "   ✓ Registered ${DEFAULT_WS} in ${WS_REG}"
 fi
 
-# Configure 30-minute systemd --user timer for agy-arch-sync
+# Configure 1x Daily systemd --user timer (safety fallback) + real-time SSE Push Daemon
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 cat > "${SYSTEMD_USER_DIR}/agy-orchestrator-sync.service" <<EOF
 [Unit]
-Description=Antigravity Orchestrator Architecture Sync
-After=network.target
+Description=Antigravity Orchestrator Architecture Sync (Daily Safety Fallback)
+After=network-online.target
 
 [Service]
 Type=oneshot
+Environment=HOME=${HOME}
+Environment=PATH=${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=${HOME}/.local/bin/agy-arch-sync --quiet
 EOF
 
 cat > "${SYSTEMD_USER_DIR}/agy-orchestrator-sync.timer" <<EOF
 [Unit]
-Description=Run Antigravity Orchestrator Architecture Sync every 30 minutes
+Description=Run Antigravity Orchestrator Architecture Sync once daily (safety fallback)
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=30min
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=120
 Unit=agy-orchestrator-sync.service
 
 [Install]
 WantedBy=timers.target
 EOF
 
+if [ -n "$NODE_BIN" ] && [ -f "${FLEET_LIB}/agy-sync-daemon.js" ]; then
+  cat > "${SYSTEMD_USER_DIR}/agy-sync-daemon.service" <<EOF
+[Unit]
+Description=Antigravity Real-Time SSE Fleet Push Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=${HOME}
+Environment=PATH=${HOME}/.local/share/mise/shims:${HOME}/.local/bin:${HOME}/.opencode/bin:${HOME}/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=${NODE_BIN} ${FLEET_LIB}/agy-sync-daemon.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+fi
+
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user daemon-reload 2>/dev/null || true
   systemctl --user enable --now agy-orchestrator-sync.timer 2>/dev/null || true
-  echo "   ✓ Enabled systemd --user timer: agy-orchestrator-sync.timer (every 30m)"
+  echo "   ✓ Enabled systemd --user timer: agy-orchestrator-sync.timer (1x Daily + Persistent)"
+  if [ -f "${SYSTEMD_USER_DIR}/agy-sync-daemon.service" ] && [ -f "${HOME}/.gemini/config/fleet-sync.json" ]; then
+    systemctl --user enable --now agy-sync-daemon.service 2>/dev/null || true
+    systemctl --user restart agy-sync-daemon.service 2>/dev/null || true
+    echo "   ✓ Enabled & started systemd --user service: agy-sync-daemon.service (Real-Time SSE Push)"
+  elif [ -f "${SYSTEMD_USER_DIR}/agy-sync-daemon.service" ]; then
+    systemctl --user enable agy-sync-daemon.service 2>/dev/null || true
+    echo "   ℹ️ Enabled agy-sync-daemon.service (will connect once ~/.gemini/config/fleet-sync.json is configured)"
+  fi
 fi
 
 date +%s > "${HOME}/.gemini/config/.last-orchestrator-sync"

@@ -100,7 +100,7 @@ cd $HOME\Development\antigravity-orchestrator
 > 3. Ρύθμιση Turbo CitC (`scripts/configure-antigravity-turbo.ps1`).
 > 4. Εγκατάσταση του `AgyGatekeeper` στο `C:\ProgramData\agy-gatekeeper\` ως SYSTEM Scheduled Task.
 > 5. Εγκατάσταση του Windows `git.cmd` shim για αποτροπή του `--no-verify`.
-> 6. Ρύθμιση προγραμματισμένης εργασίας Auto-Sync κάθε 30 λεπτά (`AgyOrchestratorAutoSync`).
+> 6. Εγκατάσταση του silent **SSE Push Daemon** (`AntigravityFleetPushDaemon`, zero console popups μέσω `wscript.exe`) + **1x Daily (`04:00`) safety fallback** (`AntigravityOrchestratorAutoSync`) + καταχώρηση του `agy-fleet` MCP server.
 > 7. Αρχικοποίηση του workspace του Home Assistant (`C:\Users\parda\OneDrive\Dev\ha`) διατηρώντας ακέραια τα credentials.
 
 ---
@@ -128,7 +128,7 @@ cd ~/Development/antigravity-orchestrator
 2. Εγκαθιστά τα παγκόσμια skills (`claude`, `codex`, `opencode`, `multi-model-delegation`, `codex-review`) στο `~/.gemini/config/skills/`.
 3. Ρυθμίζει το Turbo CitC profile στο `~/.gemini/config/config.json`.
 4. Εγκαθιστά τα βοηθητικά εργαλεία στο `~/.local/bin/` (`agy-init-workspace`, `agy-arch-sync`, `frontier-orchestrate`, `agy-setup-clis`).
-5. Εγκαθιστά και ενεργοποιεί το `systemd --user` timer `agy-orchestrator-sync.timer` για αυτόματο συγχρονισμό κάθε 30 λεπτά.
+5. Εγκαθιστά και ενεργοποιεί τον real-time **SSE Push Daemon** (`agy-sync-daemon.service`), τον `agy-fleet` MCP server (`~/.gemini/config/mcp_config.json`) και το **1x Daily** `systemd --user` safety fallback timer (`agy-orchestrator-sync.timer`).
 6. Εγκαθιστά και εκκινεί την root υπηρεσία `ma-gatekeeper` στο port `18099`.
 
 ---
@@ -172,24 +172,14 @@ agy-init-workspace.ps1 -WorkspacePath "C:\path\to\my-project"
 
 ---
 
-## 🔄 Αυτόματος Συγχρονισμός Ενημερώσεων (`agy-arch-sync`)
+## 🔄 Event-Driven Push, `agy-fleet` MCP & 1x Daily Fallback (`agy-sync-daemon`)
 
-Όποτε γίνονται βελτιώσεις στον orchestrator, στα μοντέλα ή στους κανόνες:
-```bash
-agy-arch-sync
-```
-Ή στα Windows:
-```powershell
-.\bin\agy-arch-sync.ps1
-```
-
-Εκτελείται αυτόματα κάθε 30 λεπτά μέσω του OS Scheduler (`systemd` timer στο Linux, Scheduled Task στα Windows) και πριν από κάθε build/commit μέσω του preflight check, διασφαλίζοντας ότι όλα τα καταχωρημένα workspaces στο `orchestrator-workspaces.json` διατηρούν τα πιο πρόσφατα scripts και configurations.
-
----
+Κάθε `git push` προς το GitHub στέλνει HMAC-SHA256 webhook στο **DevBox Push Hub** (`https://staging-messaging-agent.globalnetservices.net/api/agy-fleet`) ή γίνεται broadcast μέσω `architecture-push` / Staging Admin Panel (`/antigravity-fleet`) / MCP tool `agy_fleet_push_sync`.
+Όλα τα online workstations συγχρονίζονται μέσα σε **1–2 δευτερόλεπτα** (με αυτόματο catch-up όταν ξυπνάει ένα laptop από sleep), ενώ ένα **1x Daily (`86400s`)** job λειτουργεί ως safety fallback.
 
 ## ⚡ Χειροκίνητος Συγχρονισμός μέσω Slash Command (`/architecture-sync`)
 
-Όποτε επιθυμείτε άμεσο χειροκίνητο συγχρονισμό χωρίς αναμονή του 30-λεπτου scheduler:
+Όποτε επιθυμείτε άμεσο χειροκίνητο συγχρονισμό (ή αρχικό pull):
 1. **Μέσω Antigravity UI**: Πληκτρολογήστε απλά **`/architecture-sync`** στο chat box.
 2. **Μέσω Terminal (Linux / Git Bash)**:
    ```bash

@@ -1,17 +1,18 @@
 ---
 name: architecture-sync
 description: >-
-  Cross-platform manual GitHub pull and multi-model architecture synchronizer.
+  Cross-platform manual/push GitHub pull and multi-model architecture synchronizer.
   Triggered when the user types /architecture-sync or asks to sync architecture/models.
-  Detects whether the operating system is Windows or Linux/macOS, pulls latest
-  antigravity-orchestrator changes from GitHub, updates model-routing.json,
-  syncs global and workspace scripts/skills, registers workspaces, and verifies
-  the root/SYSTEM Gatekeeper daemon health on port 18099.
+  Detects Windows vs Omarchy/Linux/macOS, pulls antigravity-orchestrator from GitHub,
+  updates model-routing.json, syncs global and workspace scripts/skills, checks the
+  real-time SSE Push Daemon + agy-fleet MCP + 1x Daily fallback, and verifies Gatekeeper
+  daemon health on port 18099.
 ---
 
 # Architecture Sync Skill (`/architecture-sync`)
 
 Use this skill whenever the user types `/architecture-sync` or asks to synchronize the orchestrator, model routing, global rules, skills, or workspace scripts.
+On provisioned workstations, updates also arrive automatically in **1–2 seconds** via the **SSE Push Daemon (`agy-sync-daemon.js`)** and can be triggered from any session via **`agy-fleet` MCP** (`agy_fleet_push_sync`), backed by a **1x Daily (`86400s`)** fallback.
 
 This workflow is **zero-waste** and runs entirely in lightweight **T0 / T1** execution mode.
 
