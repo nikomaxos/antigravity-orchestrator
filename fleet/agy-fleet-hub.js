@@ -620,6 +620,7 @@ WantedBy=timers.target
   const bootstrapUrlNickLaptop = `${hubConfig.publicHubUrl}/bootstrap.ps1?token=${hubConfig.fleetToken}&profile=nick-laptop`;
   const bootstrapUrlWin11 = `${hubConfig.publicHubUrl}/bootstrap.ps1?token=${hubConfig.fleetToken}&profile=oraiokastro-win11`;
   const bootstrapUrlOmarchy = `${hubConfig.publicHubUrl}/bootstrap.sh?token=${hubConfig.fleetToken}&profile=kopanos-omarchy`;
+  const elevatedGatekeeperCommand = `if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { & "$env:USERPROFILE\\Development\\antigravity-orchestrator\\install.ps1" -SkipClis } else { Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File \`"$env:USERPROFILE\\Development\\antigravity-orchestrator\\install.ps1\`" -SkipClis" }`;
 
   return {
     hub: {
@@ -647,7 +648,7 @@ WantedBy=timers.target
         os: 'Windows 11',
         bootstrapUrl: bootstrapUrlNickLaptop,
         bootstrapCommand: `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm "${bootstrapUrlNickLaptop}" | iex`,
-        elevatedGatekeeperCommand: `Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "' + "$env:USERPROFILE\\Development\\antigravity-orchestrator\\install.ps1" + '" -SkipClis'`,
+        elevatedGatekeeperCommand,
         cliAuthCommand: `codex login; claude login; opencode auth login`,
         smokeTestCommand: `agy-init-workspace.ps1 -WorkspacePath "C:\\Users\\parda\\OneDrive\\Dev\\ha"\nInvoke-RestMethod http://127.0.0.1:18099/api/gatekeeper/health`,
         fleetSyncJson: fleetSyncNickLaptop,
@@ -662,7 +663,7 @@ WantedBy=timers.target
         os: 'Windows 11 Pro',
         bootstrapUrl: bootstrapUrlWin11,
         bootstrapCommand: `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm "${bootstrapUrlWin11}" | iex`,
-        elevatedGatekeeperCommand: `Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "' + "$env:USERPROFILE\\Development\\antigravity-orchestrator\\install.ps1" + '" -SkipClis'`,
+        elevatedGatekeeperCommand,
         cliAuthCommand: `codex login; claude login; opencode auth login`,
         smokeTestCommand: `agy-init-workspace.ps1 -WorkspacePath "C:\\Users\\soti\\Development\\my-project"\nInvoke-RestMethod http://127.0.0.1:18099/api/gatekeeper/health`,
         fleetSyncJson: fleetSyncWin11,
