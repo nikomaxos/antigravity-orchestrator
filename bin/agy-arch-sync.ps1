@@ -181,6 +181,7 @@ try {
 # 2. Sync registered workspaces
 $syncScripts = @(
     "agy-hook.js",
+    "gemini-budget.js",
     "codex-lib.sh",
     "frontier-orchestrate.sh",
     "codex-orchestrate.sh",

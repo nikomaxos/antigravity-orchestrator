@@ -1,6 +1,6 @@
 {
   "schema_version": "2026.11.3",
-  "updated_at": "2026-11-18T09:45:00Z",
+  "updated_at": "2026-11-18T11:00:00Z",
   "fleet_sync": {
     "mode": "sse-push+daily-fallback",
     "daily_interval_seconds": 86400,
@@ -267,5 +267,21 @@
     {"pool": "pool_b", "tier_key": "rca"},
     {"pool": "pool_c", "tier_key": "rca"},
     {"pool": "pool_d", "tier_key": "pro_fallback"}
-  ]
+  ],
+  "gemini_quota_guard": {
+    "_comment": "AUTOMATIC Gemini reserve trigger (workspace .agents/scripts/gemini-budget.js, run by preflight on every PreInvocation). Self-meters PLANNER_RESPONSE tokens (input + output + cache_read*cache_read_weight) from ~/.gemini/antigravity/brain/*/transcript.jsonl over a rolling 5h window and a rolling 7d window. five_hour_token_budget calibrated 2026-11-18 from the real 5h-limit exhaustion: 238.8M observed in 05:29:30Z-10:29:30Z (1002 steps) x 0.95 safety. Manual gemini-quota-mode.sh --set-reserve (source=manual) is never overridden.",
+    "enabled": true,
+    "auto": true,
+    "window_hours": 5,
+    "five_hour_token_budget": 226800000,
+    "weekly_token_budget": null,
+    "reserve_threshold_pct": 10,
+    "restore_threshold_pct": 25,
+    "warn_threshold_pct": 30,
+    "ctx_hard_limit_tokens": 200000,
+    "ctx_warn_tokens": 150000,
+    "cache_read_weight": 1.0,
+    "reinject_minutes": 15,
+    "exclude_model_regex": "claude|opus|sonnet|haiku|gpt|codex|deepseek"
+  }
 }

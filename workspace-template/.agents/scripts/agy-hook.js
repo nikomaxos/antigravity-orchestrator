@@ -445,7 +445,17 @@ async function handleQaStopGate(input) {
 // -----------------------------------------------------------------------------
 // 4. preflight
 // -----------------------------------------------------------------------------
-function handlePreflight() {
+function runGeminiGuard(input, repoRoot) {
+  // Automatic rolling 5h/weekly Gemini budget meter + context guard (gemini-budget.js).
+  try {
+    const guard = require(path.join(__dirname, 'gemini-budget.js'));
+    return guard.hookFragment(input || {}, repoRoot);
+  } catch {
+    return { statusSuffix: '', systemMessages: [] };
+  }
+}
+
+function handlePreflight(input) {
   const geminiConfigDir = path.join(USER_HOME, '.gemini', 'config');
   const stampFile = path.join(geminiConfigDir, '.last-orchestrator-sync');
   const nowSec = Math.floor(Date.now() / 1000);
@@ -482,13 +492,14 @@ function handlePreflight() {
   }
 
   const repoRoot = resolveRepoRoot();
+  const guard = runGeminiGuard(input, repoRoot);
+  const guardSteps = (guard.systemMessages || []).map((m) => ({ systemMessage: { systemMessage: m } }));
   const stateDir = path.join(repoRoot, '.agent-state');
-  if (!fs.existsSync(stateDir)) {
-    return out({ injectSteps: [] });
-  }
-  const files = fs.readdirSync(stateDir).filter((f) => f.endsWith('.json'));
+  const files = fs.existsSync(stateDir) ? fs.readdirSync(stateDir).filter((f) => f.endsWith('.json')) : [];
   if (files.length === 0) {
-    return out({ injectSteps: [] });
+    const steps = [...guardSteps];
+    if (guard.statusSuffix) steps.unshift({ ephemeralMessage: `🔒 Gates: N/A${guard.statusSuffix}` });
+    return out({ injectSteps: steps });
   }
 
   const readGate = (name) => {
@@ -513,7 +524,7 @@ function handlePreflight() {
   const security = secObj ? (secObj.status === 'PASS' ? 'REVIEWED' : 'PENDING') : 'N/A';
 
   let quotaBanner = '';
-  const quotaPath = path.join(geminiConfigDir, 'gemini-quota.json');
+  const quotaPath = process.env.AGY_GEMINI_QUOTA_FILE || path.join(geminiConfigDir, 'gemini-quota.json');
   if (fs.existsSync(quotaPath)) {
     try {
       const q = readJsonNoBom(quotaPath);
@@ -523,8 +534,8 @@ function handlePreflight() {
     } catch {}
   }
 
-  const msg = `🔒 Active Gates: QA=${qa}, Regression=${reg}, Vault=${vault}, Docs=${docs}, Skills=${skills}, Security=${security}${quotaBanner}`;
-  return out({ injectSteps: [{ ephemeralMessage: msg }] });
+  const msg = `🔒 Active Gates: QA=${qa}, Regression=${reg}, Vault=${vault}, Docs=${docs}, Skills=${skills}, Security=${security}${quotaBanner}${guard.statusSuffix || ''}`;
+  return out({ injectSteps: [{ ephemeralMessage: msg }, ...guardSteps] });
 }
 
 // -----------------------------------------------------------------------------
@@ -544,7 +555,12 @@ function handlePreflight() {
       }
     }
   } else if (MODE === 'preflight') {
-    readStdinUtf8();
+    const raw = readStdinUtf8().trim();
+    if (raw) {
+      try {
+        input = JSON.parse(raw.replace(/^\uFEFF/, ''));
+      } catch {}
+    }
   }
 
   switch (MODE) {
@@ -558,7 +574,7 @@ function handlePreflight() {
       await handleQaStopGate(input);
       break;
     case 'preflight':
-      handlePreflight();
+      handlePreflight(input);
       break;
     default:
       out({ decision: 'allow' });

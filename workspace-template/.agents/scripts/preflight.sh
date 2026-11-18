@@ -20,8 +20,22 @@ if command -v cygpath >/dev/null 2>&1; then
 fi
 STATE_DIR="${REPO_ROOT}/.agent-state"
 
+# --- AUTOMATIC Gemini rolling 5h/weekly budget meter + auto reserve + context guard ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_JSON='{}'
+if command -v node >/dev/null 2>&1 && [ -f "${SCRIPT_DIR}/gemini-budget.js" ]; then
+  GUARD_JSON=$(printf '%s' "$INPUT" | node "${SCRIPT_DIR}/gemini-budget.js" --hook --repo "$REPO_ROOT" 2>/dev/null) || GUARD_JSON='{}'
+  printf '%s' "$GUARD_JSON" | jq -e . >/dev/null 2>&1 || GUARD_JSON='{}'
+fi
+GUARD_SUFFIX=$(printf '%s' "$GUARD_JSON" | jq -r '.statusSuffix // ""' 2>/dev/null || echo "")
+GUARD_STEPS=$(printf '%s' "$GUARD_JSON" | jq -c '[(.systemMessages // [])[] | {systemMessage: {systemMessage: .}}]' 2>/dev/null || echo '[]')
+
 if [ ! -d "$STATE_DIR" ] || [ -z "$(ls -A "$STATE_DIR" 2>/dev/null)" ]; then
-  echo '{"injectSteps": []}'
+  if [ -n "$GUARD_SUFFIX" ]; then
+    jq -n -c --arg m "🔒 Gates: N/A${GUARD_SUFFIX}" --argjson g "$GUARD_STEPS" '{injectSteps: ([{ephemeralMessage: $m}] + $g)}'
+  else
+    echo '{"injectSteps": []}'
+  fi
   exit 0
 fi
 
@@ -77,6 +91,7 @@ if [ -f "$CODEX_LIB" ]; then
     fi
 
     CTX_WARN=""
+    if [ -z "$GUARD_SUFFIX" ]; then
     CONV_ID=$(printf '%s' "$INPUT" | jq -r '.conversationId // .trajectoryId // ""' 2>/dev/null)
     HOME_DIR="${HOME:-/home/nick}"
     TR_FILE=""
@@ -87,12 +102,14 @@ if [ -f "$CODEX_LIB" ]; then
       TR_FILE=$(ls -1t "${HOME_DIR}"/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl 2>/dev/null | head -1)
     fi
     if [ -n "$TR_FILE" ] && [ -f "$TR_FILE" ]; then
-      LAST_IN=$(tail -n 25 "$TR_FILE" 2>/dev/null | jq -r -R 'fromjson? | select(.type=="PLANNER_RESPONSE" and .input_tokens != null) | .input_tokens' 2>/dev/null | tail -1)
+      # context = input_tokens + cache_read_tokens (cached prefix is still re-sent every call)
+      LAST_IN=$(tail -n 25 "$TR_FILE" 2>/dev/null | jq -r -R 'fromjson? | select(.type=="PLANNER_RESPONSE" and .input_tokens != null) | ((.input_tokens // 0) + (.cache_read_tokens // 0))' 2>/dev/null | tail -1)
       if [ -n "$LAST_IN" ] && [ "$LAST_IN" -gt 160000 ] 2>/dev/null; then
         CTX_WARN=" | 🛑 CTX=$((LAST_IN / 1000))K (>160K: suggest /compact or rotate chat!)"
       elif [ -n "$LAST_IN" ] && [ "$LAST_IN" -gt 120000 ] 2>/dev/null; then
         CTX_WARN=" | ⚠️ CTX=$((LAST_IN / 1000))K (>120K: delegate heavy reads to Flash subagent; suggest /compact soon)"
       fi
+    fi
     fi
 
     echo " | 🤖 Review=${CR} Pools[B:${B_OK} C:${C_OK} D:${D_OK}]${RCA}${CTX_WARN}"
@@ -100,13 +117,13 @@ if [ -f "$CODEX_LIB" ]; then
 fi
 
 # --- Gemini <10% Quota Reserve Mode Check ---
-QUOTA_FILE="$HOME/.gemini/config/gemini-quota.json"
+QUOTA_FILE="${AGY_GEMINI_QUOTA_FILE:-$HOME/.gemini/config/gemini-quota.json}"
 GEMINI_RESERVE_BANNER=""
 if [ -f "$QUOTA_FILE" ] && jq -e '.reserve_passthrough_mode == true' "$QUOTA_FILE" >/dev/null 2>&1; then
   REM_PCT=$(jq -r '.gemini_remaining_pct // "<10"' "$QUOTA_FILE" 2>/dev/null || echo "<10")
   GEMINI_RESERVE_BANNER=" | 🚨 GEMINI_QUOTA=${REM_PCT}% (<10% PASS-THROUGH RESERVE: NO GEMINI/HYDROGEN/FLASH SUBAGENTS -> 100% POOLS B/C/D)"
 fi
 
-MSG="🔒 Active Gates: QA=${QA_STATUS}, Regression=${REG_STATUS}, Vault=${VAULT_STATUS}, Docs=${DOCS_STATUS}, Skills=${SKILLS_STATUS}, Security=${SECURITY_STATUS}${CODEX_MSG}${GEMINI_RESERVE_BANNER}"
-jq -n -c --arg m "$MSG" '{injectSteps: [{ephemeralMessage: $m}]}'
+MSG="🔒 Active Gates: QA=${QA_STATUS}, Regression=${REG_STATUS}, Vault=${VAULT_STATUS}, Docs=${DOCS_STATUS}, Skills=${SKILLS_STATUS}, Security=${SECURITY_STATUS}${CODEX_MSG}${GEMINI_RESERVE_BANNER}${GUARD_SUFFIX}"
+jq -n -c --arg m "$MSG" --argjson g "$GUARD_STEPS" '{injectSteps: ([{ephemeralMessage: $m}] + $g)}'
 

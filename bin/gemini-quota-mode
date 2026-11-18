@@ -5,15 +5,23 @@
 #   bash .agents/scripts/gemini-quota-mode.sh --set-normal [pct]    (10..100, default 100 -> restores normal mode)
 #   bash .agents/scripts/gemini-quota-mode.sh --is-reserve          (exits 0 if in <10% Reserve Mode, 1 otherwise)
 #   bash .agents/scripts/gemini-quota-mode.sh --status              (read-only: prints JSON status without mutating disk)
+#   bash .agents/scripts/gemini-quota-mode.sh --auto-status         (read-only: AUTOMATIC rolling 5h/weekly meter report via gemini-budget.js)
+#   bash .agents/scripts/gemini-quota-mode.sh --auto-apply          (evaluate meter now and auto-switch reserve/normal; preflight does this every turn)
+# NOTE: The trigger is AUTOMATIC (preflight -> gemini-budget.js, source="auto-meter"). Manual --set-reserve writes
+#       source="manual" and is NEVER auto-restored; --set-normal (source="manual") lets the auto meter take over again.
 set -euo pipefail
 
-GLOBAL_STATE_FILE="$HOME/.gemini/config/gemini-quota.json"
+GLOBAL_STATE_FILE="${AGY_GEMINI_QUOTA_FILE:-$HOME/.gemini/config/gemini-quota.json}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUDGET_JS="${SCRIPT_DIR}/gemini-budget.js"
+[ -f "$BUDGET_JS" ] || BUDGET_JS="${SCRIPT_DIR}/../workspace-template/.agents/scripts/gemini-budget.js"
+[ -f "$BUDGET_JS" ] || BUDGET_JS="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.agents/scripts/gemini-budget.js"
 THRESHOLD_PCT=10
 MODE="${1:---status}"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: gemini-quota-mode.sh <--set-reserve [0..9] | --set-normal [10..100] | --is-reserve | --status>
+Usage: gemini-quota-mode.sh <--set-reserve [0..9] | --set-normal [10..100] | --is-reserve | --status | --auto-status | --auto-apply>
 EOF
 }
 
@@ -33,12 +41,13 @@ build_json() {
   if [ "$reserve" = "true" ]; then
     allow_sub="false"
   fi
-  jq -n     --argjson pct "$pct"     --argjson threshold "$THRESHOLD_PCT"     --argjson reserve "$reserve"     --argjson allow_sub "$allow_sub"     --arg ts "$ts"     '{
+  jq -n     --argjson pct "$pct"     --argjson threshold "$THRESHOLD_PCT"     --argjson reserve "$reserve"     --argjson allow_sub "$allow_sub"     --arg ts "$ts"     --arg src "${QUOTA_SOURCE:-manual}"     '{
       gemini_remaining_pct: $pct,
       threshold_pct: $threshold,
       reserve_passthrough_mode: $reserve,
       allow_gemini_subagents: $allow_sub,
       allow_gemini_flash_t1: $allow_sub,
+      source: $src,
       t1_replacement: "Pool D (deepseek/deepseek-flash | deepseek-v4-pro) -> Pool C (claude-sonnet-5-5 low) -> Pool B (codex gpt-6-luna low)",
       t2_replacement: "Pool C (claude-sonnet-5-5 med) -> Pool B (codex gpt-6.1-terra med) -> Pool D (deepseek-v4-pro)",
       t3_replacement: "Pool B (codex gpt-6.1-sol high) -> Pool C (claude-sonnet-5-5 high) -> Pool D (deepseek-v4-pro)",
@@ -90,7 +99,18 @@ case "$MODE" in
     if [ -f "$GLOBAL_STATE_FILE" ] && jq -e . "$GLOBAL_STATE_FILE" >/dev/null 2>&1; then
       cat "$GLOBAL_STATE_FILE"
     else
-      build_json "false" 100 "default"
+      QUOTA_SOURCE=default build_json "false" 100 "default"
+    fi
+    ;;
+  --auto-status|--auto-apply)
+    if ! command -v node >/dev/null 2>&1 || [ ! -f "$BUDGET_JS" ]; then
+      echo "ERROR: node and gemini-budget.js are required for the automatic meter (looked at: $BUDGET_JS)." >&2
+      exit 1
+    fi
+    if [ "$MODE" = "--auto-apply" ]; then
+      node "$BUDGET_JS" --apply
+    else
+      node "$BUDGET_JS" --status
     fi
     ;;
   -h|--help)
