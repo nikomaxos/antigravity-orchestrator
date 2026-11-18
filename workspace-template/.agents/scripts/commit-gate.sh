@@ -26,7 +26,80 @@ else
   fi
 fi
 
-if [ "$GIT_HOOK_MODE" -eq 0 ] && ! echo "$COMMAND_LINE" | grep -iqE 'git[[:space:]]+commit|git[[:space:]]+push'; then
+# --- Compute canonical shell representation and check hook/alias/config overrides ---
+__AGY_JS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agy-hook.js"
+__CANON=""
+if [ "$GIT_HOOK_MODE" -eq 0 ]; then
+  if [ ! -f "$__AGY_JS" ] || ! command -v node >/dev/null 2>&1; then
+    echo '{"decision": "deny", "reason": "⛔ BLOCKED: agy-hook.js or node unavailable (fail-closed)"}'
+    exit 0
+  fi
+  if printf '%s' "$COMMAND_LINE" | grep -q '[^[:space:]]'; then
+    __CANON=$(printf '%s' "$COMMAND_LINE" | node "$__AGY_JS" canonical-shell 2>/dev/null || true)
+    if [ -z "$__CANON" ]; then
+      echo '{"decision": "deny", "reason": "⛔ BLOCKED: Command canonicalization failed (fail-closed)"}'
+      exit 0
+    fi
+  fi
+fi
+
+if [ "$GIT_HOOK_MODE" -eq 0 ] && printf '%s' "$COMMAND_LINE" | grep -q '[^[:space:]]'; then
+  __OV_DEC=$(printf '%s' "$COMMAND_LINE" | node "$__AGY_JS" check-git-override 2>/dev/null | head -1 || true)
+  case "$__OV_DEC" in
+    *'"decision":"deny"'*|*'"decision":"force_ask"'*) echo "$__OV_DEC"; exit 0 ;;
+    *'"decision":"allow"'*) ;;
+    *)
+      echo '{"decision": "deny", "reason": "⛔ BLOCKED: Git config override verification failed (fail-closed)"}'
+      exit 0
+      ;;
+  esac
+fi
+
+# --- Check raw + canonical hook/alias/config overrides BEFORE global-option normalization strips `-c` / `--config-env` ---
+# Require an actual git invocation (`git ...`), make `-c` alias check case-sensitive (allow `-C alias.dir`),
+# and check `--no-ver*` on git commands whenever command substitution is present in any `-m`.
+if [ "$GIT_HOOK_MODE" -eq 0 ]; then
+  __CMD_LIST=("$COMMAND_LINE")
+  if [ -n "$__CANON" ] && [ "$__CANON" != "$COMMAND_LINE" ]; then
+    __CMD_LIST+=("$__CANON")
+  fi
+  for __C in "${__CMD_LIST[@]}"; do
+    __C_CLEAN=$(printf '%s' "$__C" | node -e '
+      const fs = require("fs");
+      let s = fs.readFileSync(0, "utf8");
+      s = s.replace(/((?:^|[;|&`\n(])\s*(?:\S+\/)?git(?:\.exe)?\b[^;|&`\n]*?\b(?:commit|tag)\b[^;|&`\n]*)/gi, seg =>
+        seg.replace(/(\s)(-m|--message)(?:=((?:"(?:\\.|[^"])*"|\x27(?:\\.|[^\x27])*\x27|\S+))|\s*((?:"(?:\\.|[^"])*"|\x27(?:\\.|[^\x27])*\x27))|\s+(\S+))/gi,
+          (f, sp, fl, a, b, c) => /\$\(|\$\{|`/.test(a ?? b ?? c ?? "") ? f : `${sp}${fl} ""`)
+      );
+      process.stdout.write(s);
+    ' 2>/dev/null || printf '%s' "$__C")
+    if echo "$__C_CLEAN" | grep -qE '(^|[^[:alnum:]_.-])git(\.exe)?([^[:alnum:]_.-]|$)'; then
+      if echo "$__C_CLEAN" | grep -iqE 'core\.hookspath|include\.path|includeif\.|--config-env|GIT_CONFIG_(COUNT|KEY_|VALUE_|PARAMETERS|GLOBAL|SYSTEM)|git(\.exe)?[[:space:]].*config[[:space:]].*(alias\.|--edit|[[:space:]]-e([[:space:]]|$))' || \
+         echo "$__C_CLEAN" | grep -qE 'git(\.exe)?[[:space:]].*-c[[:space:]]*["'\'']?alias\.'; then
+        echo '{"decision": "deny", "reason": "⛔ BLOCKED: Git hook/alias/config override (core.hooksPath / include.path / alias.* / GIT_CONFIG_* / --config-env) is forbidden"}'
+        exit 0
+      fi
+      if echo "$__C_CLEAN" | grep -iqE '(^|[^[:alnum:]_.-])git(\.exe)?([[:space:]]+[^;&|]+)?[[:space:]]+push([^[:alnum:]_-]|$)' && \
+         echo "$__C_CLEAN" | grep -iqE '(["'\'']?--no-(verify|verif|veri|ver|ve|v)["'\'']?([[:space:]]|$|=|[)`;&|}]))'; then
+        echo '{"decision": "deny", "reason": "⛔ BLOCKED: git push --no-verify/--no-ver* is forbidden"}'
+        exit 0
+      fi
+    fi
+  done
+fi
+
+# --- Normalize git GLOBAL options (`git -C . commit`, `(git -C . commit)`, `$(git -C . commit)`,
+# `!git -C . commit`, `bash -c "git -C . commit"`, `git -c k=v push`) so subcommand detection below cannot be evaded.
+if [ "$GIT_HOOK_MODE" -eq 0 ] && printf '%s' "$COMMAND_LINE" | grep -q '[^[:space:]]'; then
+  __NORM=$(printf '%s' "$COMMAND_LINE" | node "$__AGY_JS" normalize-git 2>/dev/null || true)
+  if [ -z "$__NORM" ]; then
+    echo '{"decision": "deny", "reason": "⛔ BLOCKED: Git command normalization failed (fail-closed)"}'
+    exit 0
+  fi
+  COMMAND_LINE="$__NORM"
+fi
+
+if [ "$GIT_HOOK_MODE" -eq 0 ] && ! echo "$COMMAND_LINE" | grep -iqE 'git[[:space:]]+commit|git[[:space:]]+push|(^|[^[:alnum:]_.-])git(\.exe)?([[:space:]]+[^;&|()]+)?[[:space:]]+["'\''\\]*(commit|push)([^[:alnum:]_-]|$)'; then
   echo '{"decision": "allow"}'
   exit 0
 fi
@@ -97,25 +170,30 @@ if echo "$COMMAND_LINE" | grep -iqE 'git[[:space:]]+commit'; then
     # shellcheck source=codex-lib.sh
     source "$CODEX_LIB"
     if [ "$GIT_HOOK_MODE" -eq 0 ]; then
-      if echo "$COMMAND_LINE" | grep -qE 'git[[:space:]]+commit([[:space:]].*)?[[:space:]](-[[:alnum:]]*[aoi][[:alnum:]]*|--all|--only|--include)([[:space:]]|$)'; then
-        FAILED_CHECKS="${FAILED_CHECKS}git commit -a/-o/-i/--all/--only/--include is forbidden (stage explicit paths, then run the Cross-Model review gate); "
-      fi
       HAS_PATHSPEC=$(node -e '
         const cmd = process.argv[1];
         const match = cmd.match(/git\s+commit\b(.*)/i);
         if (!match) process.exit(0);
         const rest = match[1].trim();
-        const tokens = rest.match(/(?:[^\s"\x27]+|"[^"]*"|\x27[^\x27]*\x27)+/g) || [];
+        const tokens = rest.match(/(?:[^\s"\x27);&|}]+|"[^"]*"|\x27[^\x27]*\x27)+/g) || [];
         const optsWithValue = new Set(["-m", "-F", "-c", "-C", "--message", "--file", "--reedit-message", "--reuse-message", "--fixup", "--squash", "--author", "--date", "-u", "--untracked-files"]);
         for (let i = 0; i < tokens.length; i++) {
-          let t = tokens[i];
+          let t = tokens[i].replace(/^["\x27]|["\x27]$/g, "");
           if (t === "--") {
             if (i + 1 < tokens.length) { console.log("pathspec"); process.exit(0); }
             continue;
           }
+          if (/^--no-(?:verify|verif|veri|ver|ve|v)(?:=|$)/i.test(t) || /^-[a-z0-9]*[aoin][a-z0-9]*$/i.test(t) || /^--(?:all|only|include)$/i.test(t)) {
+            console.log("forbidden_flag:" + t);
+            process.exit(0);
+          }
           if (t.startsWith("-")) {
             if (optsWithValue.has(t) && i + 1 < tokens.length) {
-              i++;
+              const val = tokens[++i];
+              if (/\$\(|\$\{|`/.test(val) && /--no-(?:verify|verif|veri|ver|ve|v)(?:\s|$|["=\x27)`;&|])|(?:\s|^)-n(?:\s|$|[)`"\x27;])|core\.hookspath|include\.path|alias\./i.test(val)) {
+                console.log("forbidden_flag:subst_in_msg");
+                process.exit(0);
+              }
             }
             continue;
           }
@@ -125,6 +203,8 @@ if echo "$COMMAND_LINE" | grep -iqE 'git[[:space:]]+commit'; then
       ' "$COMMAND_LINE" 2>/dev/null || true)
       if [ "$HAS_PATHSPEC" = "pathspec" ]; then
         FAILED_CHECKS="${FAILED_CHECKS}git commit with positional pathspec is forbidden (stage explicit paths, then run the Cross-Model review gate); "
+      elif [[ "$HAS_PATHSPEC" == forbidden_flag:* ]]; then
+        FAILED_CHECKS="${FAILED_CHECKS}git commit forbidden flag (${HAS_PATHSPEC#forbidden_flag:}) is forbidden; "
       fi
     fi
     if [ -n "$(codex_staged_files)" ]; then

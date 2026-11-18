@@ -5,8 +5,10 @@
 #   bash .agents/scripts/gemini-quota-mode.sh --set-normal [pct]    (10..100, default 100 -> restores normal mode)
 #   bash .agents/scripts/gemini-quota-mode.sh --is-reserve          (exits 0 if in <10% Reserve Mode, 1 otherwise)
 #   bash .agents/scripts/gemini-quota-mode.sh --status              (read-only: prints JSON status without mutating disk)
-#   bash .agents/scripts/gemini-quota-mode.sh --auto-status         (read-only: AUTOMATIC rolling 5h/weekly meter report via gemini-budget.js)
+#   bash .agents/scripts/gemini-quota-mode.sh --auto-status         (read-only: AUTOMATIC discrete 5h/weekly meter report via gemini-budget.js)
 #   bash .agents/scripts/gemini-quota-mode.sh --auto-apply          (evaluate meter now and auto-switch reserve/normal; preflight does this every turn)
+#   bash .agents/scripts/gemini-quota-mode.sh --sync-pct <0..100>   (anchor current 5h epoch remaining % to Antigravity UI)
+#   bash .agents/scripts/gemini-quota-mode.sh --clear-sync          (clear any active UI sync anchor)
 # NOTE: The trigger is AUTOMATIC (preflight -> gemini-budget.js, source="auto-meter"). Manual --set-reserve writes
 #       source="manual" and is NEVER auto-restored; --set-normal (source="manual") lets the auto meter take over again.
 set -euo pipefail
@@ -21,7 +23,7 @@ MODE="${1:---status}"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: gemini-quota-mode.sh <--set-reserve [0..9] | --set-normal [10..100] | --is-reserve | --status | --auto-status | --auto-apply>
+Usage: gemini-quota-mode.sh <--set-reserve [0..9] | --set-normal [10..100] | --is-reserve | --status | --auto-status | --auto-apply | --sync-pct <0..100> | --clear-sync>
 EOF
 }
 
@@ -112,6 +114,26 @@ case "$MODE" in
     else
       node "$BUDGET_JS" --status
     fi
+    ;;
+  --sync-pct)
+    PCT="${2:-}"
+    if [ -z "$PCT" ]; then
+      echo "ERROR: --sync-pct requires a percentage between 0 and 100." >&2
+      exit 1
+    fi
+    validate_pct "$PCT"
+    if ! command -v node >/dev/null 2>&1 || [ ! -f "$BUDGET_JS" ]; then
+      echo "ERROR: node and gemini-budget.js are required for --sync-pct (looked at: $BUDGET_JS)." >&2
+      exit 1
+    fi
+    node "$BUDGET_JS" --sync-pct "$PCT"
+    ;;
+  --clear-sync)
+    if ! command -v node >/dev/null 2>&1 || [ ! -f "$BUDGET_JS" ]; then
+      echo "ERROR: node and gemini-budget.js are required for --clear-sync (looked at: $BUDGET_JS)." >&2
+      exit 1
+    fi
+    node "$BUDGET_JS" --clear-sync
     ;;
   -h|--help)
     usage

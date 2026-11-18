@@ -6,20 +6,23 @@
 // Antigravity exposes NO quota API to hooks, so we meter ourselves by summing the
 // token usage of PLANNER_RESPONSE steps recorded in every conversation transcript:
 //   ~/.gemini/antigravity/brain/<conv>/.system_generated/logs/transcript.jsonl
-// over a rolling 5-hour window AND a rolling 7-day window, compare with budgets in
-// model-routing.json -> `gemini_quota_guard`, and (when `auto`) flip
-// ~/.gemini/config/gemini-quota.json into Zero-Gemini Pass-Through Reserve Mode.
+// over discrete 5-hour quota epochs (starting at first Gemini step after idle/expiry)
+// AND a rolling 7-day window, compare with budgets in model-routing.json ->
+// `gemini_quota_guard`, and (when `auto`) flip ~/.gemini/config/gemini-quota.json
+// into Zero-Gemini Pass-Through Reserve Mode.
 //
 // CLI:
 //   node gemini-budget.js --status                 human-readable report (read-only)
 //   node gemini-budget.js --json                   JSON report (read-only)
 //   node gemini-budget.js --apply [--json]         evaluate + auto-switch reserve/normal
+//   node gemini-budget.js --sync-pct <0..100>      anchor current epoch remaining % to UI
+//   node gemini-budget.js --clear-sync             clear any active sync anchor
 //   node gemini-budget.js --hook [--conv <id>]     PreInvocation fragment JSON
 //                                                  {statusSuffix, systemMessages[], ...}
 //                                                  (reads hook stdin JSON if piped)
 //   node gemini-budget.js --calibrate [--at ISO] [--safety 0.95]
-//                                                  observed usage in the 5h window ending
-//                                                  at the last metered step <= --at
+//                                                  observed usage in the active 5h epoch
+//                                                  ending at the last metered step <= --at
 // Env overrides (tests / non-standard installs):
 //   AGY_GEMINI_QUOTA_FILE, AGY_BRAIN_DIR, AGY_GEMINI_BUDGET_CACHE,
 //   AGY_MODEL_ROUTING_FILE, AGY_GEMINI_GUARD_STATE, AGY_GEMINI_BUDGET_NOW (ISO, tests)
@@ -242,38 +245,123 @@ function computeBudget(opts = {}) {
   const data = opts.data || loadEvents({ noCacheWrite: opts.noCacheWrite });
   const state = opts.state || loadGuardState();
   const excl = cfg.exclude_model_regex ? new RegExp(cfg.exclude_model_regex, 'i') : null;
-  const w5Start = now - (Number(cfg.window_hours) || 5) * HOUR;
+  const windowHours = Number(cfg.window_hours) || 5;
+  const windowMs = windowHours * HOUR;
   const wkStart = now - 7 * 24 * HOUR;
   const crw = Number(cfg.cache_read_weight);
   const weight = Number.isFinite(crw) ? crw : 1;
-  let used5 = 0;
+  const budget5 = Number(cfg.five_hour_token_budget) || 0;
+
+  // Pass 1: collect non-excluded Gemini events (and excluded events) with ts <= now; sum 7d window.
+  const geminiEvents = [];
+  const excludedEvents = [];
   let usedWk = 0;
-  let steps5 = 0;
-  let excluded5 = 0;
-  const perConv5 = {};
   let ctx = null;
   for (const [file, rec] of Object.entries(data.files || {})) {
     for (const ev of rec.events || []) {
       const [ts, inp, cr, outp, model] = ev;
-      if (ts > now || ts < wkStart) continue;
+      if (ts > now) continue;
       const m = model || modelAt(state, rec.conv, ts);
       const tok = inp + outp + cr * weight;
       if (excl && m && excl.test(m)) {
-        if (ts >= w5Start) excluded5 += tok;
+        excludedEvents.push([ts, tok]);
         continue;
       }
-      usedWk += tok;
-      if (ts >= w5Start) {
-        used5 += tok;
-        steps5++;
-        perConv5[rec.conv] = (perConv5[rec.conv] || 0) + tok;
-      }
+      if (ts >= wkStart) usedWk += tok;
+      geminiEvents.push([ts, tok, rec.conv]);
     }
     if (opts.conv && rec.conv === opts.conv) ctx = { conversationId: rec.conv, tokens: rec.lastCtx || 0, file };
   }
+
+  // Pass 2: discrete 5h quota epochs starting at the first Gemini step after idle/expiry,
+  // anchored against persisted state.active_epoch (survives >8d history truncation) and active sync_anchor.
+  geminiEvents.sort((a, b) => a[0] - b[0]);
+  const sa = !opts.ignoreSyncAnchor && state && state.sync_anchor && typeof state.sync_anchor === 'object' ? state.sync_anchor : null;
+  const saValid = Boolean(
+    sa &&
+      Number.isFinite(Number(sa.resets_at_ms)) &&
+      now < Number(sa.resets_at_ms) &&
+      Number.isFinite(Number(sa.synced_remaining_pct))
+  );
+  const saEpochStart = saValid
+    ? Number.isFinite(Number(sa.epoch_start_ms))
+      ? Number(sa.epoch_start_ms)
+      : Number(sa.resets_at_ms) - windowMs
+    : null;
+  const storedEpoch =
+    !opts.ignoreStoredEpoch &&
+    !opts.at &&
+    state &&
+    state.active_epoch &&
+    typeof state.active_epoch === 'object' &&
+    Number.isFinite(Number(state.active_epoch.epoch_start_ms)) &&
+    Number(state.active_epoch.epoch_start_ms) <= now
+      ? state.active_epoch
+      : null;
+
+  let epochStart = null;
+  let resetsAt = null;
+  let used5 = 0;
+  let steps5 = 0;
+  let excluded5 = 0;
+  let perConv5 = {};
+  let used5Effective = 0;
+  let syncAnchorMeta = null;
+
+  if (saValid && saEpochStart !== null && saEpochStart <= now) {
+    epochStart = saEpochStart;
+    resetsAt = Number(sa.resets_at_ms);
+    for (const [ts, tok, conv] of geminiEvents) {
+      if (ts >= epochStart && ts <= now) {
+        used5 += tok;
+        steps5++;
+        perConv5[conv] = (perConv5[conv] || 0) + tok;
+      }
+    }
+    for (const [ts, tok] of excludedEvents) {
+      if (ts >= epochStart && ts <= now) excluded5 += tok;
+    }
+    const anchorBaseUsed = Math.max(0, (1 - Number(sa.synced_remaining_pct) / 100) * budget5);
+    const deltaSinceSync = Math.max(0, used5 - (Number(sa.used_tokens_at_sync) || 0));
+    used5Effective = anchorBaseUsed + deltaSinceSync;
+    syncAnchorMeta = {
+      synced_remaining_pct: Number(sa.synced_remaining_pct),
+      used_tokens_at_sync: Math.round(Number(sa.used_tokens_at_sync) || 0),
+      delta_since_sync: Math.round(deltaSinceSync),
+      synced_at: sa.synced_at || null,
+      epoch_start: new Date(epochStart).toISOString(),
+      resets_at: new Date(resetsAt).toISOString(),
+    };
+  } else {
+    epochStart = storedEpoch ? Number(storedEpoch.epoch_start_ms) : null;
+    for (const [ts] of geminiEvents) {
+      if (epochStart !== null && ts < epochStart) continue;
+      if (epochStart === null || ts >= epochStart + windowMs) {
+        epochStart = ts;
+      }
+    }
+    if (epochStart === null || now >= epochStart + windowMs) {
+      epochStart = null;
+      resetsAt = null;
+    } else {
+      resetsAt = epochStart + windowMs;
+      for (const [ts, tok, conv] of geminiEvents) {
+        if (ts >= epochStart && ts <= now) {
+          used5 += tok;
+          steps5++;
+          perConv5[conv] = (perConv5[conv] || 0) + tok;
+        }
+      }
+      for (const [ts, tok] of excludedEvents) {
+        if (ts >= epochStart && ts <= now) excluded5 += tok;
+      }
+    }
+    used5Effective = used5;
+  }
+
   const pct = (used, budget) =>
     budget && budget > 0 ? Math.max(0, Math.min(100, Math.round((1 - used / budget) * 1000) / 10)) : null;
-  const rem5 = pct(used5, Number(cfg.five_hour_token_budget));
+  const rem5 = pct(used5Effective, budget5);
   const remWk = pct(usedWk, cfg.weekly_token_budget ? Number(cfg.weekly_token_budget) : 0);
   const candidates = [rem5, remWk].filter((v) => v !== null);
   const remaining = candidates.length ? Math.min(...candidates) : 100;
@@ -288,12 +376,16 @@ function computeBudget(opts = {}) {
     config_source: cfg._source,
     windows: {
       five_hour: {
-        hours: Number(cfg.window_hours) || 5,
-        used_tokens: Math.round(used5),
-        budget_tokens: Number(cfg.five_hour_token_budget) || null,
+        hours: windowHours,
+        epoch_start: epochStart ? new Date(epochStart).toISOString() : null,
+        resets_at: resetsAt ? new Date(resetsAt).toISOString() : null,
+        used_tokens: Math.round(used5Effective),
+        raw_used_tokens: Math.round(used5),
+        budget_tokens: budget5 || null,
         remaining_pct: rem5,
         steps: steps5,
         excluded_non_gemini_tokens: Math.round(excluded5),
+        sync_anchor: syncAnchorMeta,
         top_conversations: topConv,
       },
       weekly: {
@@ -350,7 +442,45 @@ function buildQuotaState(reserve, pct, source, budget) {
   );
 }
 
-function applyAuto(budget) {
+function updateActiveEpochState(state, budget, fromSyncHint) {
+  if (!state || typeof state !== 'object') return false;
+  const w5 = budget && budget.windows && budget.windows.five_hour;
+  const next =
+    w5 && w5.epoch_start && w5.resets_at
+      ? {
+          epoch_start_ms: Date.parse(w5.epoch_start),
+          resets_at_ms: Date.parse(w5.resets_at),
+          from_sync: Boolean(
+            fromSyncHint !== undefined
+              ? fromSyncHint
+              : (w5.sync_anchor && state.sync_anchor && state.sync_anchor.from_sync) ||
+                  (state.active_epoch && state.active_epoch.from_sync)
+          ),
+        }
+      : null;
+  const prev = state.active_epoch || null;
+  const same =
+    (!prev && !next) ||
+    (prev &&
+      next &&
+      prev.epoch_start_ms === next.epoch_start_ms &&
+      prev.resets_at_ms === next.resets_at_ms &&
+      Boolean(prev.from_sync) === Boolean(next.from_sync));
+  if (!same) {
+    if (next) state.active_epoch = next;
+    else delete state.active_epoch;
+    return true;
+  }
+  return false;
+}
+
+function applyAuto(budget, stateOpt) {
+  const st = stateOpt || loadGuardState();
+  if (updateActiveEpochState(st, budget) && !stateOpt) {
+    try {
+      writeJsonAtomic(GUARD_STATE_FILE, st);
+    } catch {}
+  }
   const cur = readJson(QUOTA_FILE) || {};
   const curReserve = cur.reserve_passthrough_mode === true;
   const curSource = cur.source || (curReserve ? 'manual' : 'legacy');
@@ -386,7 +516,8 @@ function hookFragment(input = {}, repoRoot) {
   const now = nowMs();
   let stateDirty = recordModel(state, conv, modelName, now);
   const budget = computeBudget({ cfg, state, conv, repoRoot });
-  const applied = applyAuto(budget);
+  if (updateActiveEpochState(state, budget)) stateDirty = true;
+  const applied = applyAuto(budget, state);
   result.budget = budget;
   result.applied = applied;
   const rem = budget.remaining_pct;
@@ -475,14 +606,18 @@ function calibrate(atMs, safety) {
     }
   }
   if (!lastTs) return { error: 'no PLANNER_RESPONSE steps found before --at' };
-  const b = computeBudget({ cfg, data, state, at: lastTs, noCacheWrite: true });
+  const b = computeBudget({ cfg, data, state, at: lastTs, noCacheWrite: true, ignoreSyncAnchor: true, ignoreStoredEpoch: true });
   const w = b.windows.five_hour;
+  const excl = cfg.exclude_model_regex ? new RegExp(cfg.exclude_model_regex, 'i') : null;
+  const epochStartMs = w.epoch_start ? Date.parse(w.epoch_start) : lastTs - w.hours * HOUR;
   let rawIn = 0;
   let rawCr = 0;
   let rawOut = 0;
   for (const rec of Object.values(data.files)) {
     for (const ev of rec.events) {
-      if (ev[0] <= lastTs && ev[0] >= lastTs - w.hours * HOUR) {
+      if (ev[0] <= lastTs && ev[0] >= epochStartMs) {
+        const m = ev[4] || modelAt(state, rec.conv, ev[0]);
+        if (excl && m && excl.test(m)) continue;
         rawIn += ev[1];
         rawCr += ev[2];
         rawOut += ev[3];
@@ -493,7 +628,7 @@ function calibrate(atMs, safety) {
     exhaustion_at: new Date(atMs).toISOString(),
     last_metered_step_at: new Date(lastTs).toISOString(),
     last_metered_conversation: lastConv,
-    window_start: new Date(lastTs - w.hours * HOUR).toISOString(),
+    window_start: new Date(epochStartMs).toISOString(),
     steps: w.steps,
     input_tokens: rawIn,
     cache_read_tokens: rawCr,
@@ -513,10 +648,12 @@ module.exports = { computeBudget, applyAuto, hookFragment, calibrate, loadGuardC
 // -----------------------------------------------------------------------------
 if (require.main === module) {
   const argv = process.argv.slice(2);
-  const has = (f) => argv.includes(f);
+  const has = (f) => argv.includes(f) || argv.some((a) => a.startsWith(`${f}=`));
   const val = (f) => {
     const i = argv.indexOf(f);
-    return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null;
+    if (i >= 0 && i + 1 < argv.length) return argv[i + 1];
+    const eq = argv.find((a) => a.startsWith(`${f}=`));
+    return eq ? eq.slice(f.length + 1) : null;
   };
   try {
     if (has('--calibrate')) {
@@ -535,8 +672,55 @@ if (require.main === module) {
       if (val('--model')) input.modelName = val('--model');
       const fr = hookFragment(input, val('--repo') || undefined);
       process.stdout.write(JSON.stringify({ statusSuffix: fr.statusSuffix, systemMessages: fr.systemMessages, remaining_pct: fr.budget ? fr.budget.remaining_pct : null, applied: fr.applied }) + '\n');
+    } else if (has('--sync-pct') || has('--clear-sync')) {
+      const repoRoot = val('--repo') || undefined;
+      const cfg = loadGuardConfig(repoRoot);
+      const state = loadGuardState();
+      const now = nowMs();
+      if (has('--clear-sync')) {
+        delete state.sync_anchor;
+        if (state.active_epoch && state.active_epoch.from_sync) delete state.active_epoch;
+      } else {
+        const rawPct = val('--sync-pct');
+        const pctVal = rawPct === null || rawPct === '' ? NaN : Number(rawPct);
+        if (!Number.isFinite(pctVal) || pctVal < 0 || pctVal > 100) {
+          throw new Error(`--sync-pct requires a number between 0 and 100 (got: '${rawPct}')`);
+        }
+        const rawB = computeBudget({ cfg, state, ignoreSyncAnchor: true, noCacheWrite: true, repoRoot });
+        const w5Raw = rawB.windows.five_hour;
+        const windowMs = (Number(cfg.window_hours) || 5) * HOUR;
+        const hasRawEpoch = Boolean(w5Raw.epoch_start);
+        const epochStartMs = hasRawEpoch ? Date.parse(w5Raw.epoch_start) : now;
+        const resetsAtMs = w5Raw.resets_at ? Date.parse(w5Raw.resets_at) : epochStartMs + windowMs;
+        state.sync_anchor = {
+          synced_remaining_pct: pctVal,
+          epoch_start_ms: epochStartMs,
+          resets_at_ms: resetsAtMs,
+          used_tokens_at_sync: w5Raw.raw_used_tokens ?? w5Raw.used_tokens,
+          from_sync: !hasRawEpoch,
+          synced_at: new Date(now).toISOString(),
+        };
+        if (!hasRawEpoch) {
+          state.active_epoch = { epoch_start_ms: epochStartMs, resets_at_ms: resetsAtMs, from_sync: true };
+        }
+      }
+      const b = computeBudget({ cfg, state, conv: val('--conv') || undefined, repoRoot });
+      let applied = applyAuto(b, state);
+      updateActiveEpochState(state, b, has('--clear-sync') ? false : undefined);
+      writeJsonAtomic(GUARD_STATE_FILE, state);
+      if (applied.action === 'none' && b.enabled && b.auto) {
+        const cur = readJson(QUOTA_FILE) || {};
+        const curReserve = cur.reserve_passthrough_mode === true;
+        const curSource = cur.source || (curReserve ? 'manual' : 'legacy');
+        if (!(curReserve && curSource === 'manual')) {
+          writeJsonAtomic(QUOTA_FILE, buildQuotaState(curReserve, Math.floor(b.remaining_pct), curReserve ? curSource : 'auto-meter', b));
+          applied = { action: has('--clear-sync') ? 'clear-sync' : 'sync-anchor', reserve: curReserve, source: curReserve ? curSource : 'auto-meter' };
+        }
+      }
+      const q = readJson(QUOTA_FILE) || {};
+      process.stdout.write(JSON.stringify(Object.assign({}, b, { applied, quota_state: { reserve_passthrough_mode: q.reserve_passthrough_mode === true, source: q.source || 'legacy', updated_at: q.updated_at || null } }), null, 2) + '\n');
     } else {
-      const b = computeBudget({ conv: val('--conv') || undefined });
+      const b = computeBudget({ conv: val('--conv') || undefined, repoRoot: val('--repo') || undefined });
       const applied = has('--apply') ? applyAuto(b) : null;
       const q = readJson(QUOTA_FILE) || {};
       if (has('--json') || has('--apply')) {
@@ -544,9 +728,11 @@ if (require.main === module) {
       } else {
         const w = b.windows.five_hour;
         const wk = b.windows.weekly;
+        const resetTxt = w.resets_at ? `, resets ${w.resets_at}` : ', idle/expired';
+        const syncTxt = w.sync_anchor ? ` [sync=${w.sync_anchor.synced_remaining_pct}%+${fmtK(w.sync_anchor.delta_since_sync)}]` : '';
         const lines = [
           `Gemini Budget Meter @ ${b.at}  (config: ${b.config_source}, auto=${b.auto})`,
-          `  5h window : used ${fmtK(w.used_tokens)} / ${fmtK(w.budget_tokens || 0)} -> remaining ${w.remaining_pct}%  (${w.steps} steps, excluded non-Gemini ${fmtK(w.excluded_non_gemini_tokens)})`,
+          `  5h window : used ${fmtK(w.used_tokens)} / ${fmtK(w.budget_tokens || 0)} -> remaining ${w.remaining_pct}%  (${w.steps} steps, excluded non-Gemini ${fmtK(w.excluded_non_gemini_tokens)}${resetTxt})${syncTxt}`,
           `  7d window : used ${fmtK(wk.used_tokens)} / ${wk.budget_tokens ? fmtK(wk.budget_tokens) : 'unbounded'} -> remaining ${wk.remaining_pct ?? 'n/a'}%`,
           `  EFFECTIVE remaining = ${b.remaining_pct}%  (reserve < ${b.thresholds.reserve}%, restore >= ${b.thresholds.restore}%, warn < ${b.thresholds.warn}%)`,
           `  Quota state: reserve=${q.reserve_passthrough_mode === true} source=${q.source || 'legacy'} updated=${q.updated_at || 'n/a'}`,
