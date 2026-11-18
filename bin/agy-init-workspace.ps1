@@ -91,9 +91,23 @@ foreach ($d in $dirsToCreate) {
     }
 }
 
-# 4. Copy Control Plane Components
-Copy-Item -Path (Join-Path $templateDir ".agents\hooks.json") -Destination $agentsDir -Force
-Copy-Item -Path (Join-Path $templateDir ".agents\scripts\*") -Destination $scriptsDir -Recurse -Force
+# 4. Copy Control Plane Components (temporarily grant Administrators overwrite permission if ACL-locked)
+$isAdminNow = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdminNow) {
+    foreach ($aclTarget in @(
+        (Join-Path $agentsDir "hooks.json"),
+        (Join-Path $scriptsDir "commit-gate.sh"),
+        (Join-Path $scriptsDir "protect-enforcement.sh"),
+        (Join-Path $scriptsDir "verify-gates.sh"),
+        (Join-Path $scriptsDir "agy-hook.js")
+    )) {
+        if (Test-Path $aclTarget) {
+            try { icacls "$aclTarget" /grant "BUILTIN\Administrators:(F)" 2>$null | Out-Null } catch {}
+        }
+    }
+}
+try { Copy-Item -Path (Join-Path $templateDir ".agents\hooks.json") -Destination $agentsDir -Force } catch { Write-Host "   ⚠️ Run as Administrator to refresh ACL-locked hooks.json" -ForegroundColor Yellow }
+try { Copy-Item -Path (Join-Path $templateDir ".agents\scripts\*") -Destination $scriptsDir -Recurse -Force } catch { Write-Host "   ⚠️ Some ACL-locked scripts skipped without elevation" -ForegroundColor DarkGray }
 Copy-Item -Path (Join-Path $templateDir ".agents\skills\*") -Destination $skillsDir -Recurse -Force
 $srcRouting = Join-Path $templateDir ".agents\config\model-routing.json"
 if (Test-Path $srcRouting) {
@@ -246,6 +260,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 if command -v cygpath >/dev/null 2>&1; then
   REPO_ROOT="$(cygpath -m "$REPO_ROOT" 2>/dev/null || echo "$REPO_ROOT")"
 fi
+if [ -f "${REPO_ROOT}/.agents/scripts/agy-hook.js" ] && command -v node >/dev/null 2>&1; then
+  exec node "${REPO_ROOT}/.agents/scripts/agy-hook.js" commit-gate --git-hook
+fi
 exec bash "${REPO_ROOT}/.agents/scripts/commit-gate.sh" --git-hook
 '@
 
@@ -277,6 +294,7 @@ if ($isAdmin) {
     $targetUser = $env:USERNAME
     $protectedFiles = @(
         (Join-Path $agentsDir "hooks.json"),
+        (Join-Path $scriptsDir "agy-hook.js"),
         (Join-Path $scriptsDir "commit-gate.sh"),
         (Join-Path $scriptsDir "protect-enforcement.sh"),
         (Join-Path $scriptsDir "verify-gates.sh"),
@@ -291,7 +309,7 @@ if ($isAdmin) {
     Write-Host "   ✓ Locked enforcement hooks with NTFS ACLs: read+execute only for $targetUser" -ForegroundColor Green
 }
 
-# 12. Register Workspace in ~/.gemini/config/orchestrator-workspaces.json
+# 12. Register Workspace in ~/.gemini/config/orchestrator-workspaces.json (always JSON array even with 1 item)
 $geminiConfigDir = Join-Path $userHome ".gemini\config"
 $wsRegFile = Join-Path $geminiConfigDir "orchestrator-workspaces.json"
 try {
@@ -299,11 +317,16 @@ try {
     $registered = @()
     if (Test-Path $wsRegFile) {
         $rawReg = ([System.IO.File]::ReadAllText($wsRegFile, [System.Text.Encoding]::UTF8)).TrimStart([char]0xFEFF)
-        $registered = @($rawReg | ConvertFrom-Json)
+        $parsedReg = $rawReg | ConvertFrom-Json
+        if ($parsedReg -is [System.Array]) { $registered = @($parsedReg | Where-Object { $_ }) }
+        elseif ($parsedReg -is [string] -and $parsedReg.Trim()) { $registered = @($parsedReg.Trim()) }
     }
-    if ($registered -notcontains $targetDir) {
+    $wasMissing = $registered -notcontains $targetDir
+    if ($wasMissing) {
         $registered += $targetDir
-        Write-Utf8NoBom -Path $wsRegFile -Content (($registered | ConvertTo-Json) + "`n")
+    }
+    Write-Utf8NoBom -Path $wsRegFile -Content ((ConvertTo-Json -InputObject ([string[]]$registered)) + "`n")
+    if ($wasMissing) {
         Write-Host "   ✓ Registered workspace in $wsRegFile" -ForegroundColor Green
     }
 } catch {}

@@ -260,7 +260,7 @@ function verifyWorkspaceTCBIntegrity(workspace) {
   for (const tc of templateHooksCandidates) {
     if (fs.existsSync(tc)) {
       try {
-        const content = fs.readFileSync(tc, 'utf8');
+        const content = fs.readFileSync(tc, 'utf8').replace(/^\uFEFF/, '');
         JSON.parse(content);
         canonicalTemplate = tc;
         break;
@@ -271,12 +271,16 @@ function verifyWorkspaceTCBIntegrity(workspace) {
   let hooksValid = false;
   if (fs.existsSync(hooksFile)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
+      const parsed = JSON.parse(fs.readFileSync(hooksFile, 'utf8').replace(/^\uFEFF/, ''));
       const hooks = parsed.hooks || parsed;
-      const preToolUse = hooks.PreToolUse || [];
-      const stop = hooks.Stop || [];
-      const hasCommitGate = JSON.stringify(preToolUse).includes('commit-gate');
-      const hasVerifyGates = JSON.stringify(stop).includes('verify-gates');
+      const preToolUse = hooks.PreToolUse || (hooks['commit-gate'] && hooks['commit-gate'].PreToolUse) || [];
+      const stop = hooks.Stop || (hooks['qa-stop-gate'] && hooks['qa-stop-gate'].Stop) || [];
+      const preToolEnabled = hooks['commit-gate'] ? hooks['commit-gate'].enabled !== false : true;
+      const stopEnabled = hooks['qa-stop-gate'] ? hooks['qa-stop-gate'].enabled !== false : true;
+      const preStr = JSON.stringify(preToolUse) + JSON.stringify(hooks.PreToolUse || []);
+      const stopStr = JSON.stringify(stop);
+      const hasCommitGate = preToolEnabled && (preStr.includes('commit-gate'));
+      const hasVerifyGates = stopEnabled && (stopStr.includes('qa-stop-gate') || stopStr.includes('verify-gates'));
       if (hasCommitGate && hasVerifyGates) {
         hooksValid = true;
       }
@@ -315,7 +319,7 @@ function verifyWorkspaceTCBIntegrity(workspace) {
     if (!preCommitValid) {
       try {
         fs.mkdirSync(path.dirname(preCommitHook), { recursive: true });
-        const hookContent = '#!/usr/bin/env bash\nexec "$(git rev-parse --show-toplevel)/.agents/scripts/commit-gate.sh" "$@"\n';
+        const hookContent = '#!/usr/bin/env bash\nTOP="$(git rev-parse --show-toplevel)"\nif [ -f "${TOP}/.agents/scripts/agy-hook.js" ] && command -v node >/dev/null 2>&1; then\n  exec node "${TOP}/.agents/scripts/agy-hook.js" commit-gate --git-hook\nfi\nexec "${TOP}/.agents/scripts/commit-gate.sh" --git-hook "$@"\n';
         fs.writeFileSync(preCommitHook, hookContent, { mode: 0o755 });
         if (!isWin) {
           try { fs.chmodSync(preCommitHook, 0o755); } catch (_) {}
@@ -452,7 +456,7 @@ function verifyGateFile(workspace, gate, secret) {
     return { exists: false, validHmac: false, data: null, error: `${gate}.json missing` };
   }
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
+    const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
     const data = JSON.parse(raw);
     const storedHmac = data.hmac || '';
     if (!storedHmac) {

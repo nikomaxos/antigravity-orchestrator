@@ -163,6 +163,7 @@ fi
 
 # 2. Sync registered workspaces
 SYNC_SCRIPTS=(
+  "agy-hook.js"
   "codex-lib.sh"
   "frontier-orchestrate.sh"
   "codex-orchestrate.sh"
@@ -175,16 +176,25 @@ SYNC_SCRIPTS=(
 
 if [ -f "$WS_REGISTRY" ] && command -v jq >/dev/null 2>&1; then
   log "🔄 Syncing registered workspaces from ${WS_REGISTRY}..."
-  WORKSPACES=$(jq -r '.[] // empty' "$WS_REGISTRY" 2>/dev/null || true)
+  WORKSPACES=$(jq -r 'if type=="array" then .[] elif type=="string" then . else empty end' "$WS_REGISTRY" 2>/dev/null || true)
   while IFS= read -r ws; do
     [ -z "$ws" ] && continue
     if [ -d "$ws" ] && [ -d "${ws}/.agents" ]; then
-      if [ "$FORCE" -eq 0 ] && [ -d "${ws}/.git" ] && [ -n "$(git -C "$ws" status --porcelain -- . ':(exclude).agent-state' ':(exclude).agent-reports' ':(exclude).last-staging-deploy' 2>/dev/null || true)" ]; then
-        log "   -> Skipping workspace ${ws} (uncommitted changes in progress; pass --force to override)"
+      if [ "$FORCE" -eq 0 ] && [ -d "${ws}/.git" ] && [ -n "$(git -C "$ws" status --porcelain -- .agents ':(exclude).agents/rules' ':(exclude).agent-state' ':(exclude).agent-reports' 2>/dev/null || true)" ]; then
+        log "   -> Skipping workspace ${ws} (uncommitted changes inside .agents/; pass --force to override)"
         continue
       fi
       log "   -> Syncing workspace: ${ws}"
       mkdir -p "${ws}/.agents/config" "${ws}/.agents/scripts"
+
+      # Refresh hooks.json if missing or still referencing legacy relative ./.agents/scripts/ paths
+      SRC_HOOKS="${REPO_DIR}/workspace-template/.agents/hooks.json"
+      DEST_HOOKS="${ws}/.agents/hooks.json"
+      if [ -f "$SRC_HOOKS" ]; then
+        if [ ! -f "$DEST_HOOKS" ] || grep -q '"\./\.agents/scripts/' "$DEST_HOOKS" 2>/dev/null; then
+          cp -f "$SRC_HOOKS" "$DEST_HOOKS" 2>/dev/null || true
+        fi
+      fi
 
       # Sync model-routing.json
       if [ -f "${CONFIG_DIR}/model-routing.json" ]; then

@@ -326,6 +326,16 @@ $userGatekeeperDir = Join-Path $userHome ".local\lib\agy-gatekeeper"
 $targetGatekeeperDir = if ($isAdmin) { $systemGatekeeperDir } else { $userGatekeeperDir }
 
 try {
+    if ($isAdmin) {
+        try {
+            if (Get-Command Stop-ScheduledTask -ErrorAction SilentlyContinue) {
+                Stop-ScheduledTask -TaskName "AntigravityGatekeeper" -ErrorAction SilentlyContinue
+            }
+            Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like "*agy-gatekeeper*server.js*" } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        } catch {}
+    }
     New-Item -ItemType Directory -Path $targetGatekeeperDir -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $targetGatekeeperDir "template") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $targetGatekeeperDir "shim") -Force | Out-Null
@@ -393,38 +403,69 @@ try {
 
 if (-not $gatekeeperRunning) {
     Write-Host "   Starting AgyGatekeeper daemon in background..." -ForegroundColor DarkGray
-    if ($foundNode) {
-        Start-Process -FilePath $nodeCmd -ArgumentList "`"$targetGatekeeperDir\server.js`"" -WindowStyle Hidden
-        Start-Sleep -Seconds 2
+    $startedViaTask = $false
+    if ($isAdmin -and (Get-Command Start-ScheduledTask -ErrorAction SilentlyContinue)) {
         try {
+            Start-ScheduledTask -TaskName "AntigravityGatekeeper" -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:18099/api/gatekeeper/health" -Method Get -TimeoutSec 2 -ErrorAction Stop
             if ($health.status -eq "UP") {
-                Write-Host "   ✅ agy-gatekeeper listening on http://127.0.0.1:18099" -ForegroundColor Green
+                $startedViaTask = $true
+                Write-Host "   ✅ agy-gatekeeper (NT AUTHORITY\SYSTEM) listening on http://127.0.0.1:18099" -ForegroundColor Green
             }
-        } catch {
-            Write-Host "   ⚠️ Process started; health check will be ready momentarily." -ForegroundColor Yellow
+        } catch {}
+    }
+    if (-not $startedViaTask) {
+        if ($foundNode) {
+            Start-Process -FilePath $nodeCmd -ArgumentList "`"$targetGatekeeperDir\server.js`"" -WindowStyle Hidden
+            Start-Sleep -Seconds 2
+            try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:18099/api/gatekeeper/health" -Method Get -TimeoutSec 2 -ErrorAction Stop
+                if ($health.status -eq "UP") {
+                    Write-Host "   ✅ agy-gatekeeper listening on http://127.0.0.1:18099" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "   ⚠️ Process started; health check will be ready momentarily." -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "   ⚠️ 'node' command not found in PATH. Please install Node.js (LTS)." -ForegroundColor Yellow
         }
-    } else {
-        Write-Host "   ⚠️ 'node' command not found in PATH. Please install Node.js (LTS)." -ForegroundColor Yellow
     }
 } else {
     Write-Host "   ✅ agy-gatekeeper is already running and healthy on 127.0.0.1:18099" -ForegroundColor Green
 }
 
 # -----------------------------------------------------------------------------
-# 7. Workspace Initialization (Smart Auto-Detection)
+# 7. Workspace Initialization & Control-Plane Refresh
 # -----------------------------------------------------------------------------
-$targetWs = ""
+$wsTargets = @()
 if ($WorkspacePath -and (Test-Path $WorkspacePath)) {
-    $targetWs = [System.IO.Path]::GetFullPath($WorkspacePath)
+    $wsTargets += [System.IO.Path]::GetFullPath($WorkspacePath)
 } elseif (Test-Path "C:\Users\parda\OneDrive\Dev\ha") {
-    $targetWs = "C:\Users\parda\OneDrive\Dev\ha"
+    $wsTargets += "C:\Users\parda\OneDrive\Dev\ha"
 }
 
-if ($targetWs) {
-    Write-Host "`n🏠 7. Initializing target workspace: $targetWs..." -ForegroundColor Cyan
-    $initScript = Join-Path $scriptDir "bin\agy-init-workspace.ps1"
-    & $initScript -WorkspacePath $targetWs
+$wsRegPath = Join-Path $geminiConfigDir "orchestrator-workspaces.json"
+if (Test-Path $wsRegPath) {
+    try {
+        $regObj = Read-JsonNoBom -Path $wsRegPath
+        $regList = @()
+        if ($regObj -is [System.Array]) { $regList = @($regObj | Where-Object { $_ }) }
+        elseif ($regObj -is [string] -and $regObj.Trim()) { $regList = @($regObj.Trim()) }
+        foreach ($rw in $regList) {
+            if ($rw -and (Test-Path $rw) -and ($wsTargets -notcontains $rw)) {
+                $wsTargets += $rw
+            }
+        }
+    } catch {}
+}
+
+$initScript = Join-Path $scriptDir "bin\agy-init-workspace.ps1"
+if (Test-Path $initScript) {
+    foreach ($wsDir in $wsTargets) {
+        Write-Host "`n🏠 7. Initializing / refreshing workspace: $wsDir..." -ForegroundColor Cyan
+        & $initScript -WorkspacePath $wsDir
+    }
 }
 
 Write-Host "`n🎉 Installation complete!" -ForegroundColor Cyan

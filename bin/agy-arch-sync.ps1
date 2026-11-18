@@ -88,11 +88,13 @@ if ($WorkspacePath -and (Test-Path $WorkspacePath)) {
         $resolvedWs = (Resolve-Path $WorkspacePath).Path
         $wsList = @()
         if (Test-Path $wsRegistry) {
-            $wsList = @(Read-JsonNoBom -Path $wsRegistry)
+            $parsedWs = Read-JsonNoBom -Path $wsRegistry
+            if ($parsedWs -is [System.Array]) { $wsList = @($parsedWs | Where-Object { $_ }) }
+            elseif ($parsedWs) { $wsList = @([string]$parsedWs) }
         }
         if ($wsList -notcontains $resolvedWs) {
             $wsList += $resolvedWs
-            Write-Utf8NoBom -Path $wsRegistry -Content (($wsList | ConvertTo-Json) + "`n")
+            Write-Utf8NoBom -Path $wsRegistry -Content ((ConvertTo-Json -InputObject ([string[]]$wsList)) + "`n")
             Write-Log "   -> Registered workspace: $resolvedWs" "Green"
         }
     } catch {}
@@ -178,6 +180,7 @@ try {
 
 # 2. Sync registered workspaces
 $syncScripts = @(
+    "agy-hook.js",
     "codex-lib.sh",
     "frontier-orchestrate.sh",
     "codex-orchestrate.sh",
@@ -190,13 +193,21 @@ $syncScripts = @(
 
 if (Test-Path $wsRegistry) {
     try {
-        $workspaces = @(Read-JsonNoBom -Path $wsRegistry)
+        $parsedReg = Read-JsonNoBom -Path $wsRegistry
+        $workspaces = @()
+        if ($parsedReg -is [System.Array]) {
+            $workspaces = @($parsedReg | Where-Object { $_ })
+        } elseif ($parsedReg -is [string] -and $parsedReg.Trim()) {
+            $workspaces = @($parsedReg.Trim())
+            # Self-heal legacy 1-element scalar JSON string into proper JSON array
+            Write-Utf8NoBom -Path $wsRegistry -Content ((ConvertTo-Json -InputObject ([string[]]$workspaces)) + "`n")
+        }
         foreach ($ws in $workspaces) {
             if ($ws -and (Test-Path $ws) -and (Test-Path (Join-Path $ws ".agents"))) {
                 if (-not $Force -and (Test-Path (Join-Path $ws ".git"))) {
-                    $dirty = git -C "$ws" status --porcelain -- . ':(exclude).agent-state' ':(exclude).agent-reports' ':(exclude).last-staging-deploy' 2>$null
+                    $dirty = git -C "$ws" status --porcelain -- .agents ':(exclude).agents/rules' ':(exclude).agent-state' ':(exclude).agent-reports' 2>$null
                     if ($dirty) {
-                        Write-Log "   -> Skipping workspace $ws (uncommitted changes in progress; pass -Force to override)" "DarkGray"
+                        Write-Log "   -> Skipping workspace $ws (uncommitted changes inside .agents/; pass -Force to override)" "DarkGray"
                         continue
                     }
                 }
@@ -206,14 +217,30 @@ if (Test-Path $wsRegistry) {
                 New-Item -ItemType Directory -Path $wsConfig -Force | Out-Null
                 New-Item -ItemType Directory -Path $wsScripts -Force | Out-Null
 
+                # Refresh hooks.json if missing or using broken ./.agents/scripts/ prefix (skip silently if NTFS ACL-locked)
+                $srcHooks = Join-Path $repoDir "workspace-template\.agents\hooks.json"
+                $destHooks = Join-Path $ws ".agents\hooks.json"
+                if (Test-Path $srcHooks) {
+                    $needsHooksUpdate = -not (Test-Path $destHooks)
+                    if (-not $needsHooksUpdate) {
+                        try {
+                            $curHooks = [System.IO.File]::ReadAllText($destHooks, [System.Text.Encoding]::UTF8)
+                            if ($curHooks -like '*./.agents/scripts/*') { $needsHooksUpdate = $true }
+                        } catch {}
+                    }
+                    if ($needsHooksUpdate) {
+                        try { Copy-Item -Path $srcHooks -Destination $destHooks -Force -ErrorAction SilentlyContinue } catch {}
+                    }
+                }
+
                 if (Test-Path $srcModelRouting) {
-                    Copy-Item -Path $srcModelRouting -Destination (Join-Path $wsConfig "model-routing.json") -Force
+                    try { Copy-Item -Path $srcModelRouting -Destination (Join-Path $wsConfig "model-routing.json") -Force -ErrorAction SilentlyContinue } catch {}
                 }
 
                 foreach ($s in $syncScripts) {
                     $srcS = Join-Path $repoDir "workspace-template\.agents\scripts\$s"
                     if (Test-Path $srcS) {
-                        Copy-Item -Path $srcS -Destination (Join-Path $wsScripts $s) -Force
+                        try { Copy-Item -Path $srcS -Destination (Join-Path $wsScripts $s) -Force -ErrorAction SilentlyContinue } catch {}
                     }
                 }
 
@@ -222,7 +249,7 @@ if (Test-Path $wsRegistry) {
                 if (Test-Path $srcWsSkills) {
                     $destWsSkills = Join-Path $ws ".agents\skills"
                     New-Item -ItemType Directory -Path $destWsSkills -Force | Out-Null
-                    Copy-Item -Path "$srcWsSkills\*" -Destination $destWsSkills -Recurse -Force
+                    try { Copy-Item -Path "$srcWsSkills\*" -Destination $destWsSkills -Recurse -Force -ErrorAction SilentlyContinue } catch {}
                 }
 
                 # Sync workspace workflows
@@ -230,7 +257,7 @@ if (Test-Path $wsRegistry) {
                 if (Test-Path $srcWsWorkflows) {
                     $destWsWorkflows = Join-Path $ws ".agents\workflows"
                     New-Item -ItemType Directory -Path $destWsWorkflows -Force | Out-Null
-                    Copy-Item -Path "$srcWsWorkflows\*" -Destination $destWsWorkflows -Recurse -Force
+                    try { Copy-Item -Path "$srcWsWorkflows\*" -Destination $destWsWorkflows -Recurse -Force -ErrorAction SilentlyContinue } catch {}
                 }
             }
         }

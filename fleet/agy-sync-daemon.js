@@ -144,7 +144,8 @@ function countRegisteredWorkspaces() {
     const regPath = path.join(GEMINI_CONFIG_DIR, 'orchestrator-workspaces.json');
     if (fs.existsSync(regPath)) {
       const parsed = readJsonNoBom(regPath);
-      return Array.isArray(parsed) ? parsed.length : 0;
+      if (Array.isArray(parsed)) return parsed.filter(Boolean).length;
+      if (typeof parsed === 'string' && parsed.trim()) return 1;
     }
   } catch {}
   return 0;

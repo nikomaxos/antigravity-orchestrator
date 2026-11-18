@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./.agents/scripts/commit-gate.sh",
+            "command": "node scripts/agy-hook.js commit-gate",
             "timeout": 10
           }
         ]
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./.agents/scripts/protect-enforcement.sh",
+            "command": "node scripts/agy-hook.js protect-enforcement",
             "timeout": 5
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./.agents/scripts/protect-enforcement.sh",
+            "command": "node scripts/agy-hook.js protect-enforcement",
             "timeout": 5
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./.agents/scripts/protect-enforcement.sh",
+            "command": "node scripts/agy-hook.js protect-enforcement",
             "timeout": 5
           }
         ]
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./.agents/scripts/protect-enforcement.sh",
+            "command": "node scripts/agy-hook.js protect-enforcement",
             "timeout": 5
           }
         ]
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./.agents/scripts/protect-enforcement.sh",
+            "command": "node scripts/agy-hook.js protect-enforcement",
             "timeout": 5
           }
         ]
@@ -71,7 +71,7 @@
     "Stop": [
       {
         "type": "command",
-        "command": "./.agents/scripts/qa-stop-gate.sh",
+        "command": "node scripts/agy-hook.js qa-stop-gate",
         "timeout": 10
       }
     ]
@@ -80,7 +80,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "./.agents/scripts/preflight.sh",
+        "command": "node scripts/agy-hook.js preflight",
         "timeout": 5
       }
     ]
