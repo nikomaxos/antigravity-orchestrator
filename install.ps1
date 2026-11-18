@@ -223,8 +223,7 @@ $daemonScript = Join-Path $fleetLib "agy-sync-daemon.js"
 try {
     if (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue) {
         if (Test-Path $vbsLauncher) {
-            $dailyInner = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncScript`" -Quiet"
-            $syncAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" `"$($dailyInner.Replace('"', '""'))`""
+            $syncAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncScript`" -Quiet"
         } else {
             $syncAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File `"$syncScript`" -Quiet"
         }
@@ -234,8 +233,7 @@ try {
         Write-Host "   ✓ Registered Scheduled Task: AntigravityOrchestratorAutoSync (1x Daily at 04:00 + StartWhenAvailable, silent)" -ForegroundColor Green
 
         if ((Test-Path $daemonScript) -and (Test-Path $vbsLauncher)) {
-            $daemonInner = "`"$nodeCmd`" `"$daemonScript`""
-            $pushAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" `"$($daemonInner.Replace('"', '""'))`""
+            $pushAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" `"$nodeCmd`" `"$daemonScript`""
             $pushTrigger = New-ScheduledTaskTrigger -AtLogOn
             $pushSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Days 3650)
             Register-ScheduledTask -TaskName "AntigravityFleetPushDaemon" -Action $pushAction -Trigger $pushTrigger -Settings $pushSettings -Force -ErrorAction SilentlyContinue | Out-Null

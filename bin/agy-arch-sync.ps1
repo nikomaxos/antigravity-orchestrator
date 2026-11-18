@@ -147,8 +147,7 @@ try {
             $vbsLauncher = Join-Path $fleetLib "agy-silent-launch.vbs"
             $syncPs1 = Join-Path $localBin "agy-arch-sync.ps1"
             if (Test-Path $vbsLauncher) {
-                $inner = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncPs1`" -Quiet"
-                $newAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" `"$($inner.Replace('"', '""'))`""
+                $newAction = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //NoLogo `"$vbsLauncher`" powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncPs1`" -Quiet"
             } else {
                 $newAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$syncPs1`" -Quiet"
             }
