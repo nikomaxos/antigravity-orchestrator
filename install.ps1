@@ -17,7 +17,24 @@ param(
     [switch]$SkipClis = $false
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
+
+function Read-JsonNoBom {
+    param([string]$Path)
+    $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    if ($raw) { $raw = $raw.TrimStart([char]0xFEFF) }
+    return ($raw | ConvertFrom-Json)
+}
 
 $scriptDir = $PSScriptRoot
 if (-not $scriptDir) {
@@ -107,14 +124,14 @@ foreach ($targetDir in $openCodeTargets) {
     } else {
         # Preserve existing API keys if already present; ensure readonly-auditor is merged
         try {
-            $existing = Get-Content -Path $destFile -Raw | ConvertFrom-Json
-            $template = Get-Content -Path $srcOpenCodeJson -Raw | ConvertFrom-Json
+            $existing = Read-JsonNoBom -Path $destFile
+            $template = Read-JsonNoBom -Path $srcOpenCodeJson
             if (-not $existing.agent) {
                 $existing | Add-Member -MemberType NoteProperty -Name "agent" -Value $template.agent
             } elseif (-not $existing.agent."readonly-auditor") {
                 $existing.agent | Add-Member -MemberType NoteProperty -Name "readonly-auditor" -Value $template.agent."readonly-auditor"
             }
-            $existing | ConvertTo-Json -Depth 10 | Set-Content -Path $destFile -Encoding UTF8
+            Write-Utf8NoBom -Path $destFile -Content (($existing | ConvertTo-Json -Depth 10) + "`n")
             Write-Host "   ✓ Updated $destFile (preserved existing provider & keys)" -ForegroundColor Green
         } catch {
             Write-Host "   ℹ️ Preserved existing $destFile" -ForegroundColor DarkGray
@@ -130,8 +147,12 @@ if (-not $SkipClis) {
     if (Get-Command npm -ErrorAction SilentlyContinue) {
         try {
             Write-Host "   Installing/updating @openai/codex, @anthropic-ai/claude-code, and opencode-ai globally..." -ForegroundColor DarkGray
-            npm install -g @openai/codex @anthropic-ai/claude-code opencode-ai --silent
-            Write-Host "   ✓ Frontier CLIs installed globally via npm" -ForegroundColor Green
+            $npmOut = & npm install -g @openai/codex @anthropic-ai/claude-code opencode-ai --silent 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "   ✓ Frontier CLIs installed globally via npm" -ForegroundColor Green
+            } else {
+                Write-Host "   ⚠️ npm install exited with code ${LASTEXITCODE}: $($npmOut | Out-String)" -ForegroundColor Yellow
+            }
         } catch {
             Write-Host "   ⚠️ npm install encountered an issue: $($_.Exception.Message)" -ForegroundColor Yellow
         }
@@ -177,7 +198,7 @@ if (Test-Path $mcpScriptPath) {
         $mcpObj = [PSCustomObject]@{ mcpServers = [PSCustomObject]@{} }
         if (Test-Path $mcpConfigPath) {
             try {
-                $parsedMcp = Get-Content -Path $mcpConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $parsedMcp = Read-JsonNoBom -Path $mcpConfigPath
                 if ($parsedMcp) { $mcpObj = $parsedMcp }
             } catch {}
         }
@@ -189,8 +210,8 @@ if (Test-Path $mcpScriptPath) {
             args = @($mcpScriptPath)
         }
         $mcpObj.mcpServers | Add-Member -MemberType NoteProperty -Name "agy-fleet" -Value $serverDef -Force
-        $mcpObj | ConvertTo-Json -Depth 10 | Set-Content -Path $mcpConfigPath -Encoding UTF8
-        Write-Host "   ✓ Registered MCP server 'agy-fleet' in $mcpConfigPath" -ForegroundColor Green
+        Write-Utf8NoBom -Path $mcpConfigPath -Content (($mcpObj | ConvertTo-Json -Depth 10) + "`n")
+        Write-Host "   ✓ Registered MCP server 'agy-fleet' in $mcpConfigPath (UTF-8 without BOM)" -ForegroundColor Green
     } catch {
         Write-Host "   ⚠️ Failed updating mcp_config.json: $($_.Exception.Message)" -ForegroundColor Yellow
     }
@@ -259,27 +280,35 @@ try {
     }
 } catch {}
 
-# Start / refresh silent SSE Push Daemon immediately when fleet-sync.json exists
+# Start / restart silent SSE Push Daemon cleanly whenever fleet-sync.json exists
 $fleetSyncJson = Join-Path $geminiConfigDir "fleet-sync.json"
 $daemonPidFile = Join-Path $geminiConfigDir ".agy-sync-daemon.pid"
 if ((Test-Path $fleetSyncJson) -and (Test-Path $daemonScript) -and $foundNode) {
-    $daemonAlreadyUp = $false
+    # Always stop any pre-existing agy-sync-daemon.js process so nodeId/token switches take effect immediately
     if (Test-Path $daemonPidFile) {
         try {
-            $oldPid = [int](Get-Content -Path $daemonPidFile -Raw -Encoding UTF8).Trim()
-            if ($oldPid -gt 0 -and (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)) {
-                $daemonAlreadyUp = $true
+            $oldPid = [int](([System.IO.File]::ReadAllText($daemonPidFile, [System.Text.Encoding]::UTF8)).TrimStart([char]0xFEFF).Trim())
+            if ($oldPid -gt 0) {
+                Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
             }
         } catch {}
+        Remove-Item -Path $daemonPidFile -Force -ErrorAction SilentlyContinue
     }
-    if (-not $daemonAlreadyUp) {
-        try {
+    try {
+        Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -like "*agy-sync-daemon.js*" } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    } catch {}
+
+    Start-Sleep -Milliseconds 300
+    try {
+        if (Test-Path $vbsLauncher) {
+            Start-Process -FilePath "wscript.exe" -ArgumentList "//B //NoLogo `"$vbsLauncher`" `"$nodeCmd`" `"$daemonScript`"" -WindowStyle Hidden
+        } else {
             Start-Process -FilePath $nodeCmd -ArgumentList "`"$daemonScript`"" -WindowStyle Hidden
-            Write-Host "   ✓ Started silent SSE Push Daemon (agy-sync-daemon.js)" -ForegroundColor Green
-        } catch {}
-    } else {
-        Write-Host "   ✓ Silent SSE Push Daemon is already running" -ForegroundColor Green
-    }
+        }
+        Write-Host "   ✓ Started fresh silent SSE Push Daemon (agy-sync-daemon.js)" -ForegroundColor Green
+    } catch {}
 }
 
 # -----------------------------------------------------------------------------
@@ -296,14 +325,18 @@ $systemGatekeeperDir = Join-Path $progData "agy-gatekeeper"
 $userGatekeeperDir = Join-Path $userHome ".local\lib\agy-gatekeeper"
 $targetGatekeeperDir = if ($isAdmin) { $systemGatekeeperDir } else { $userGatekeeperDir }
 
-New-Item -ItemType Directory -Path $targetGatekeeperDir -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $targetGatekeeperDir "template") -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $targetGatekeeperDir "shim") -Force | Out-Null
+try {
+    New-Item -ItemType Directory -Path $targetGatekeeperDir -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $targetGatekeeperDir "template") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $targetGatekeeperDir "shim") -Force | Out-Null
 
-Copy-Item -Path (Join-Path $scriptDir "gatekeeper\server.js") -Destination (Join-Path $targetGatekeeperDir "server.js") -Force
-Copy-Item -Path (Join-Path $scriptDir "workspace-template\.agents\hooks.json") -Destination (Join-Path $targetGatekeeperDir "template\hooks.json") -Force
-Copy-Item -Path (Join-Path $scriptDir "gatekeeper\shim\*") -Destination (Join-Path $targetGatekeeperDir "shim") -Recurse -Force
-Write-Host "   ✓ Installed Gatekeeper daemon at $targetGatekeeperDir\server.js" -ForegroundColor Green
+    Copy-Item -Path (Join-Path $scriptDir "gatekeeper\server.js") -Destination (Join-Path $targetGatekeeperDir "server.js") -Force
+    Copy-Item -Path (Join-Path $scriptDir "workspace-template\.agents\hooks.json") -Destination (Join-Path $targetGatekeeperDir "template\hooks.json") -Force
+    Copy-Item -Path (Join-Path $scriptDir "gatekeeper\shim\*") -Destination (Join-Path $targetGatekeeperDir "shim") -Recurse -Force
+    Write-Host "   ✓ Installed Gatekeeper daemon at $targetGatekeeperDir\server.js" -ForegroundColor Green
+} catch {
+    Write-Host "   ℹ️ Gatekeeper target directory locked or already provisioned ($($_.Exception.Message))" -ForegroundColor DarkGray
+}
 
 if ($isAdmin) {
     Write-Host "🔒 Applying Layer 1 NT AUTHORITY\SYSTEM Privileged TCB Locks..." -ForegroundColor Cyan

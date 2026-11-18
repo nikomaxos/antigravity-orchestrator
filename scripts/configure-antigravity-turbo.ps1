@@ -8,7 +8,17 @@ param(
     [string]$WorkspacePath = ""
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
 
 $userHome = $HOME
 if (-not $userHome) { $userHome = $env:USERPROFILE }
@@ -18,14 +28,14 @@ $configFile = Join-Path $configDir "config.json"
 New-Item -ItemType Directory -Path $configDir -Force | Out-Null
 
 if (-not (Test-Path $configFile)) {
-    Set-Content -Path $configFile -Value '{"userSettings":{}}' -Encoding UTF8
+    Write-Utf8NoBom -Path $configFile -Content '{"userSettings":{}}'
 } else {
     $stamp = Get-Date -Format "yyyyMMddHHmmss"
     Copy-Item -Path $configFile -Destination "$configFile.bak.$stamp" -Force -ErrorAction SilentlyContinue
 }
 
 try {
-    $raw = Get-Content -Path $configFile -Raw -Encoding UTF8
+    $raw = ([System.IO.File]::ReadAllText($configFile, [System.Text.Encoding]::UTF8)).TrimStart([char]0xFEFF)
     $json = $raw | ConvertFrom-Json
 } catch {
     $json = [PSCustomObject]@{ userSettings = [PSCustomObject]@{} }
@@ -51,7 +61,7 @@ foreach ($k in $props.Keys) {
     }
 }
 
-$json | ConvertTo-Json -Depth 10 | Set-Content -Path $configFile -Encoding UTF8
+Write-Utf8NoBom -Path $configFile -Content (($json | ConvertTo-Json -Depth 10) + "`n")
 Write-Host "   ✓ Configured Turbo settings in $configFile" -ForegroundColor Green
 
 # -----------------------------------------------------------------------------
@@ -66,7 +76,8 @@ if ($appData) {
     $agSettings = [PSCustomObject]@{}
     if (Test-Path $agSettingsFile) {
         try {
-            $agSettings = Get-Content -Path $agSettingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $rawAg = ([System.IO.File]::ReadAllText($agSettingsFile, [System.Text.Encoding]::UTF8)).TrimStart([char]0xFEFF)
+            $agSettings = $rawAg | ConvertFrom-Json
         } catch {}
     }
 
@@ -85,7 +96,7 @@ if ($appData) {
         }
     }
 
-    $agSettings | ConvertTo-Json -Depth 10 | Set-Content -Path $agSettingsFile -Encoding UTF8
+    Write-Utf8NoBom -Path $agSettingsFile -Content (($agSettings | ConvertTo-Json -Depth 10) + "`n")
     Write-Host "   ✓ Configured Workspace Trust in $agSettingsFile" -ForegroundColor Green
 }
 

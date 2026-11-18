@@ -85,10 +85,15 @@ function acquirePidLock() {
   }
 }
 
+function readJsonNoBom(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+  return JSON.parse(raw);
+}
+
 function loadFleetConfig() {
   if (!fs.existsSync(FLEET_CONFIG_PATH)) return null;
   try {
-    const cfg = JSON.parse(fs.readFileSync(FLEET_CONFIG_PATH, 'utf8'));
+    const cfg = readJsonNoBom(FLEET_CONFIG_PATH);
     if (!cfg.hubUrl || !cfg.fleetToken) return null;
     return cfg;
   } catch {
@@ -127,7 +132,7 @@ function getLocalSchemaVersion() {
   try {
     const routingPath = path.join(GEMINI_CONFIG_DIR, 'model-routing.json');
     if (fs.existsSync(routingPath)) {
-      const parsed = JSON.parse(fs.readFileSync(routingPath, 'utf8'));
+      const parsed = readJsonNoBom(routingPath);
       return parsed.schema_version || null;
     }
   } catch {}
@@ -138,7 +143,7 @@ function countRegisteredWorkspaces() {
   try {
     const regPath = path.join(GEMINI_CONFIG_DIR, 'orchestrator-workspaces.json');
     if (fs.existsSync(regPath)) {
-      const parsed = JSON.parse(fs.readFileSync(regPath, 'utf8'));
+      const parsed = readJsonNoBom(regPath);
       return Array.isArray(parsed) ? parsed.length : 0;
     }
   } catch {}
@@ -251,7 +256,7 @@ async function sendAck(cfg, status, durationMs) {
       nodeId: cfg.nodeId || os.hostname(),
       label: cfg.label || cfg.nodeId || os.hostname(),
       location: cfg.location || 'Remote',
-      os: isWin ? 'Windows 11 Pro' : (os.platform() === 'linux' ? 'Linux' : os.platform()),
+      os: cfg.os || (isWin ? 'Windows 11' : (os.platform() === 'linux' ? 'Linux' : os.platform())),
       platform: process.platform,
       hostname: os.hostname(),
       commit,

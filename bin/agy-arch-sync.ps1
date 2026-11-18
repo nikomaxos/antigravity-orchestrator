@@ -14,6 +14,23 @@ param(
 
 $ErrorActionPreference = "Continue"
 
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
+
+function Read-JsonNoBom {
+    param([string]$Path)
+    $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    if ($raw) { $raw = $raw.TrimStart([char]0xFEFF) }
+    return ($raw | ConvertFrom-Json)
+}
+
 function Write-Log {
     param([string]$Message, [string]$Color = "Cyan")
     if (-not $Quiet) {
@@ -71,11 +88,11 @@ if ($WorkspacePath -and (Test-Path $WorkspacePath)) {
         $resolvedWs = (Resolve-Path $WorkspacePath).Path
         $wsList = @()
         if (Test-Path $wsRegistry) {
-            $wsList = @(Get-Content -Path $wsRegistry -Raw -Encoding UTF8 | ConvertFrom-Json)
+            $wsList = @(Read-JsonNoBom -Path $wsRegistry)
         }
         if ($wsList -notcontains $resolvedWs) {
             $wsList += $resolvedWs
-            $wsList | ConvertTo-Json | Set-Content -Path $wsRegistry -Encoding UTF8
+            Write-Utf8NoBom -Path $wsRegistry -Content (($wsList | ConvertTo-Json) + "`n")
             Write-Log "   -> Registered workspace: $resolvedWs" "Green"
         }
     } catch {}
@@ -173,7 +190,7 @@ $syncScripts = @(
 
 if (Test-Path $wsRegistry) {
     try {
-        $workspaces = @(Get-Content -Path $wsRegistry -Raw -Encoding UTF8 | ConvertFrom-Json)
+        $workspaces = @(Read-JsonNoBom -Path $wsRegistry)
         foreach ($ws in $workspaces) {
             if ($ws -and (Test-Path $ws) -and (Test-Path (Join-Path $ws ".agents"))) {
                 if (-not $Force -and (Test-Path (Join-Path $ws ".git"))) {
@@ -222,5 +239,5 @@ if (Test-Path $wsRegistry) {
 
 # 3. Stamp last sync time (epoch seconds)
 $epoch = [int64]((Get-Date).ToUniversalTime() - (Get-Date "1970-01-01 00:00:00")).TotalSeconds
-Set-Content -Path $stampFile -Value $epoch -Encoding UTF8
+Write-Utf8NoBom -Path $stampFile -Content "$epoch`n"
 Write-Log "✅ Architecture sync complete! Stamped $stampFile" "Green"

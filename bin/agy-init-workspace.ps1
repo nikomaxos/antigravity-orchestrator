@@ -16,7 +16,17 @@ param(
     [string]$WorkspacePath = "."
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, ($Content -replace "`r`n", "`n"), $enc)
+}
 
 $userHome = $HOME
 if (-not $userHome) { $userHome = $env:USERPROFILE }
@@ -256,9 +266,9 @@ fi
 exit 0
 '@
 
-Set-Content -Path $preCommitPath -Value $preCommitContent -NoNewline -Encoding UTF8
-Set-Content -Path $postCommitPath -Value $postCommitContent -NoNewline -Encoding UTF8
-Write-Host "   ✓ Installed .git/hooks/pre-commit & post-commit" -ForegroundColor Green
+Write-Utf8NoBom -Path $preCommitPath -Content $preCommitContent
+Write-Utf8NoBom -Path $postCommitPath -Content $postCommitContent
+Write-Host "   ✓ Installed .git/hooks/pre-commit & post-commit (UTF-8 no-BOM LF)" -ForegroundColor Green
 
 # 11. Apply TCB Filesystem ACL Lock (Layer 3) if running as Administrator
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -288,11 +298,12 @@ try {
     New-Item -ItemType Directory -Path $geminiConfigDir -Force | Out-Null
     $registered = @()
     if (Test-Path $wsRegFile) {
-        $registered = @(Get-Content -Path $wsRegFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+        $rawReg = ([System.IO.File]::ReadAllText($wsRegFile, [System.Text.Encoding]::UTF8)).TrimStart([char]0xFEFF)
+        $registered = @($rawReg | ConvertFrom-Json)
     }
     if ($registered -notcontains $targetDir) {
         $registered += $targetDir
-        $registered | ConvertTo-Json | Set-Content -Path $wsRegFile -Encoding UTF8
+        Write-Utf8NoBom -Path $wsRegFile -Content (($registered | ConvertTo-Json) + "`n")
         Write-Host "   ✓ Registered workspace in $wsRegFile" -ForegroundColor Green
     }
 } catch {}

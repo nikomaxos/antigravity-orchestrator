@@ -7,7 +7,8 @@
 // - Broadcasts instant SSE `sync` events to all connected workstations
 // - Tracks online status, synced commit SHA, schema_version, and Gatekeeper health
 // - Serves authenticated bootstrap scripts & setup bundles for:
-//     * Windows 11 Pro (Ωραιόκαστρο)
+//     * Nick Laptop — Windows 11 (Κοπανός / Mobile Personal)
+//     * Soti-Laptop — Windows 11 Pro (Ωραιόκαστρο)
 //     * Omarchy Linux / Arch (Κοπανός Ημαθίας)
 // =============================================================================
 'use strict';
@@ -39,6 +40,14 @@ const CANONICAL_PROFILES = {
     os: 'Ubuntu 24.04 Linux',
     platform: 'linux',
     expectedProfile: 'devbox',
+  },
+  'nick-laptop': {
+    nodeId: 'nick-laptop',
+    label: 'Nick Laptop (Windows 11)',
+    location: 'Κοπανός / Mobile (Personal)',
+    os: 'Windows 11',
+    platform: 'win32',
+    expectedProfile: 'nick-laptop',
   },
   'oraiokastro-win11': {
     nodeId: 'oraiokastro-win11',
@@ -204,10 +213,81 @@ function resolveCanonicalNodeId(rawNodeId, rawOs, rawHostname) {
   if (rawNodeId && nodesState[rawNodeId]) return rawNodeId;
   const hostLow = String(rawHostname || '').toLowerCase();
   const osLow = String(rawOs || '').toLowerCase();
-  if (hostLow.includes('soti') || osLow.includes('windows')) return 'oraiokastro-win11';
-  if (osLow.includes('omarchy') || osLow.includes('arch') || hostLow.includes('kopanos')) return 'kopanos-omarchy';
+  if (hostLow.includes('soti') || hostLow.includes('oraio')) return 'oraiokastro-win11';
+  if (hostLow.includes('nick') || hostLow.includes('parda') || hostLow.includes('lenovo')) return 'nick-laptop';
+  if (osLow.includes('omarchy') || osLow.includes('arch') || hostLow.includes('omarchy') || hostLow.includes('kopanos')) {
+    return 'kopanos-omarchy';
+  }
   if (hostLow.includes('devbox') || rawNodeId === 'devbox') return 'devbox';
   return rawNodeId || `node-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function resetNodeToPending(nodeId) {
+  const profile = CANONICAL_PROFILES[nodeId];
+  if (!profile) return;
+  nodesState[nodeId] = {
+    nodeId,
+    label: profile.label,
+    location: profile.location,
+    os: profile.os,
+    platform: profile.platform,
+    expectedProfile: profile.expectedProfile,
+    hostname: null,
+    commit: null,
+    schemaVersion: null,
+    online: false,
+    connectedSince: null,
+    lastSeenAt: null,
+    lastSyncAt: null,
+    lastSyncStatus: 'PENDING_INSTALL',
+    lastSyncDurationMs: null,
+    workspacesSynced: 0,
+    gatekeeperHealthy: null,
+    clientIp: null,
+  };
+}
+
+function closeStreamsForNode(nodeId) {
+  for (const [cid, client] of Array.from(sseClients.entries())) {
+    if (client.nodeId === nodeId) {
+      try {
+        client.res.end();
+      } catch {}
+      sseClients.delete(cid);
+    }
+  }
+}
+
+function reconcileDuplicateHostname(activeNodeId, hostname, previousNodeId = null) {
+  const hostNorm = String(hostname || '').trim().toLowerCase();
+  let changed = false;
+
+  if (previousNodeId && previousNodeId !== activeNodeId && CANONICAL_PROFILES[previousNodeId]) {
+    const prevNode = nodesState[previousNodeId];
+    const hasLiveStream = Array.from(sseClients.values()).some((c) => c.nodeId === previousNodeId);
+    const sameHost = Boolean(prevNode?.hostname && hostNorm && prevNode.hostname.trim().toLowerCase() === hostNorm);
+    if (!hasLiveStream || sameHost || !prevNode?.hostname) {
+      if (hasLiveStream) closeStreamsForNode(previousNodeId);
+      resetNodeToPending(previousNodeId);
+      changed = true;
+    }
+  }
+
+  if (hostNorm) {
+    for (const [otherId, otherNode] of Object.entries(nodesState)) {
+      if (otherId === activeNodeId) continue;
+      if (otherNode.hostname && String(otherNode.hostname).trim().toLowerCase() === hostNorm) {
+        closeStreamsForNode(otherId);
+        if (CANONICAL_PROFILES[otherId]) {
+          resetNodeToPending(otherId);
+        } else {
+          delete nodesState[otherId];
+        }
+        changed = true;
+      }
+    }
+  }
+  return changed;
 }
 
 function getOrderedNodes() {
@@ -215,7 +295,7 @@ function getOrderedNodes() {
   for (const client of sseClients.values()) {
     connectedCounts.set(client.nodeId, (connectedCounts.get(client.nodeId) || 0) + 1);
   }
-  const orderedIds = ['devbox', 'oraiokastro-win11', 'kopanos-omarchy'];
+  const orderedIds = ['devbox', 'nick-laptop', 'oraiokastro-win11', 'kopanos-omarchy'];
   const extraIds = Object.keys(nodesState).filter((id) => !orderedIds.includes(id)).sort();
   return [...orderedIds, ...extraIds]
     .filter((id) => Boolean(nodesState[id]))
@@ -245,7 +325,7 @@ function extractBearer(req) {
 }
 
 function isFleetAuthorized(req, urlObj) {
-  const token = extractBearer(req) || urlObj.searchParams.get('token') || '';
+  const token = extractBearer(req) || String(req.headers['x-fleet-token'] || '').trim() || urlObj.searchParams.get('token') || '';
   return constantTimeTokenEqual(token, hubConfig.fleetToken);
 }
 
@@ -421,6 +501,21 @@ function buildConfigTemplates() {
     2
   );
 
+  const fleetSyncNickLaptop = JSON.stringify(
+    {
+      hubUrl: hubConfig.publicHubUrl,
+      fleetToken: hubConfig.fleetToken,
+      nodeId: 'nick-laptop',
+      label: 'Nick Laptop (Windows 11)',
+      location: 'Κοπανός / Mobile (Personal)',
+      os: 'Windows 11',
+      expectedProfile: 'nick-laptop',
+      dailyFallbackSeconds: 86400,
+    },
+    null,
+    2
+  );
+
   const fleetSyncWin11 = JSON.stringify(
     {
       hubUrl: hubConfig.publicHubUrl,
@@ -428,6 +523,7 @@ function buildConfigTemplates() {
       nodeId: 'oraiokastro-win11',
       label: 'Soti-Laptop (Windows 11 Pro)',
       location: 'Ωραιόκαστρο',
+      os: 'Windows 11 Pro',
       expectedProfile: 'oraiokastro-win11',
       dailyFallbackSeconds: 86400,
     },
@@ -442,6 +538,7 @@ function buildConfigTemplates() {
       nodeId: 'kopanos-omarchy',
       label: 'Omarchy Workstation',
       location: 'Κοπανός Ημαθίας',
+      os: 'Omarchy Linux (Arch / Hyprland)',
       expectedProfile: 'kopanos-omarchy',
       dailyFallbackSeconds: 86400,
     },
@@ -520,6 +617,7 @@ WantedBy=timers.target
     );
   } catch {}
 
+  const bootstrapUrlNickLaptop = `${hubConfig.publicHubUrl}/bootstrap.ps1?token=${hubConfig.fleetToken}&profile=nick-laptop`;
   const bootstrapUrlWin11 = `${hubConfig.publicHubUrl}/bootstrap.ps1?token=${hubConfig.fleetToken}&profile=oraiokastro-win11`;
   const bootstrapUrlOmarchy = `${hubConfig.publicHubUrl}/bootstrap.sh?token=${hubConfig.fleetToken}&profile=kopanos-omarchy`;
 
@@ -542,14 +640,29 @@ WantedBy=timers.target
     fleetToken: hubConfig.fleetToken,
     nodes: getOrderedNodes(),
     profiles: {
+      'nick-laptop': {
+        nodeId: 'nick-laptop',
+        label: 'Nick Laptop — Windows 11 (Personal)',
+        location: 'Κοπανός / Mobile (Personal)',
+        os: 'Windows 11',
+        bootstrapUrl: bootstrapUrlNickLaptop,
+        bootstrapCommand: `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm "${bootstrapUrlNickLaptop}" | iex`,
+        elevatedGatekeeperCommand: `Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "' + "$env:USERPROFILE\\Development\\antigravity-orchestrator\\install.ps1" + '" -SkipClis'`,
+        cliAuthCommand: `codex login; claude login; opencode auth login`,
+        smokeTestCommand: `agy-init-workspace.ps1 -WorkspacePath "C:\\Users\\parda\\OneDrive\\Dev\\ha"\nInvoke-RestMethod http://127.0.0.1:18099/api/gatekeeper/health`,
+        fleetSyncJson: fleetSyncNickLaptop,
+        mcpConfigJson: mcpConfigWin11,
+        turboConfigJson,
+        daemonConfig: windowsSilentVbs,
+      },
       'oraiokastro-win11': {
         nodeId: 'oraiokastro-win11',
-        label: 'Windows 11 Pro — Ωραιόκαστρο (Soti-Laptop)',
+        label: 'Soti-Laptop — Windows 11 Pro (Ωραιόκαστρο)',
         location: 'Ωραιόκαστρο',
         os: 'Windows 11 Pro',
         bootstrapUrl: bootstrapUrlWin11,
         bootstrapCommand: `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm "${bootstrapUrlWin11}" | iex`,
-        elevatedGatekeeperCommand: `Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "' + "$env:USERPROFILE\\Development\\antigravity-orchestrator\\install.ps1" + '"'`,
+        elevatedGatekeeperCommand: `Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "' + "$env:USERPROFILE\\Development\\antigravity-orchestrator\\install.ps1" + '" -SkipClis'`,
         cliAuthCommand: `codex login; claude login; opencode auth login`,
         smokeTestCommand: `agy-init-workspace.ps1 -WorkspacePath "C:\\Users\\soti\\Development\\my-project"\nInvoke-RestMethod http://127.0.0.1:18099/api/gatekeeper/health`,
         fleetSyncJson: fleetSyncWin11,
@@ -577,7 +690,7 @@ WantedBy=timers.target
 }
 
 function renderBootstrapPs1(profileId) {
-  const profile = CANONICAL_PROFILES[profileId] || CANONICAL_PROFILES['oraiokastro-win11'];
+  const profile = CANONICAL_PROFILES[profileId] || CANONICAL_PROFILES['nick-laptop'];
   const hubUrl = hubConfig.publicHubUrl;
   const token = hubConfig.fleetToken;
   const repoUrl = hubConfig.repoUrl;
@@ -586,12 +699,48 @@ function renderBootstrapPs1(profileId) {
 # Antigravity Workstation Bootstrap — ${profile.label}
 # Location: ${profile.location} | Mode: Real-Time SSE Push + 1x Daily Fallback
 # =============================================================================
-$ErrorActionPreference = "Stop"
+# PowerShell 5.1 safe: keep Continue globally so git/npm stderr never aborts setup.
+$ErrorActionPreference = "Continue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $userHome = $HOME
 if (-not $userHome) { $userHome = $env:USERPROFILE }
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $enc)
+}
+
+function Strip-Utf8BomFile {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            $clean = [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+            Write-Utf8NoBom -Path $Path -Content $clean
+        }
+    } catch {}
+}
+
+function Invoke-GitCmd {
+    param([string[]]$GitArgs)
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $cmdOut = & git @GitArgs 2>&1
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevPref
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output   = ($cmdOut | Out-String).Trim()
+    }
+}
 
 Write-Host "🚀 Antigravity Workstation Setup: ${profile.label} (${profile.location})" -ForegroundColor Cyan
 
@@ -605,6 +754,73 @@ foreach ($p in @(
     if ((Test-Path $p) -and ($env:Path -notlike "*$p*")) {
         $env:Path = "$p;$env:Path"
     }
+}
+
+# 0. Corrective Cleanup: Undo wrong-profile install (e.g. accidental Soti-Laptop run) & stop stale daemons/BOMs
+$geminiConfigDir = Join-Path $userHome ".gemini\\config"
+New-Item -ItemType Directory -Path $geminiConfigDir -Force | Out-Null
+$fleetSyncPath = Join-Path $geminiConfigDir "fleet-sync.json"
+$daemonPidFile = Join-Path $geminiConfigDir ".agy-sync-daemon.pid"
+$migratedFromNodeId = ""
+
+if (Test-Path $fleetSyncPath) {
+    try {
+        $oldRaw = ([System.IO.File]::ReadAllText($fleetSyncPath, [System.Text.Encoding]::UTF8)).TrimStart([char]0xFEFF)
+        $oldCfg = $oldRaw | ConvertFrom-Json
+        if ($oldCfg -and $oldCfg.nodeId -and ($oldCfg.nodeId -ne "${profile.nodeId}")) {
+            $migratedFromNodeId = [string]$oldCfg.nodeId
+            Write-Host ""
+            Write-Host "🧹 Corrective Action: Detected '$migratedFromNodeId' profile on this laptop — migrating cleanly to '${profile.nodeId}' (${profile.label})..." -ForegroundColor Yellow
+        }
+    } catch {}
+}
+
+# Always stop any pre-existing agy-sync-daemon.js process before rewriting config & restarting
+if (Test-Path $daemonPidFile) {
+    try {
+        $oldPid = [int](([System.IO.File]::ReadAllText($daemonPidFile, [System.Text.Encoding]::UTF8)).TrimStart([char]0xFEFF).Trim())
+        if ($oldPid -gt 0) {
+            Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+    Remove-Item -Path $daemonPidFile -Force -ErrorAction SilentlyContinue
+}
+try {
+    Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like "*agy-sync-daemon.js*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+} catch {}
+
+# Clean legacy task names cleanly if owned by current user
+foreach ($legacyTask in @("AgyOrchestratorAutoSync", "AntigravityArchSync", "ArchitectureSync")) {
+    try {
+        if (Get-ScheduledTask -TaskName $legacyTask -ErrorAction SilentlyContinue) {
+            Stop-ScheduledTask -TaskName $legacyTask -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $legacyTask -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Host "   ✓ Unregistered legacy task: $legacyTask" -ForegroundColor Green
+        }
+    } catch {}
+}
+
+# Strip any accidental PS 5.1 UTF-8 BOM from existing JSON config files
+Strip-Utf8BomFile -Path (Join-Path $geminiConfigDir "mcp_config.json")
+Strip-Utf8BomFile -Path (Join-Path $geminiConfigDir "config.json")
+Strip-Utf8BomFile -Path (Join-Path $geminiConfigDir "orchestrator-workspaces.json")
+if ($env:APPDATA) {
+    Strip-Utf8BomFile -Path (Join-Path $env:APPDATA "Antigravity\\User\\settings.json")
+}
+
+# Tell Fleet Hub to reset mistaken profile slot back to PENDING_INSTALL if we migrated profiles
+if ($migratedFromNodeId) {
+    try {
+        $releaseBody = @{
+            previousNodeId = $migratedFromNodeId
+            newNodeId      = "${profile.nodeId}"
+            hostname       = $env:COMPUTERNAME
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Method Post -Uri "${hubUrl}/release-node" -Headers @{ Authorization = "Bearer ${token}" } -ContentType "application/json" -Body $releaseBody -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+        Write-Host "   ✓ Released previous profile slot '$migratedFromNodeId' on DevBox Fleet Hub" -ForegroundColor Green
+    } catch {}
 }
 
 # 1. Check / Install Git & Node.js LTS
@@ -628,44 +844,77 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     }
 }
 
-# 2. Clone or update antigravity-orchestrator
+# 2. Clone or update antigravity-orchestrator (PS 5.1 stderr-safe)
 $devDir = Join-Path $userHome "Development"
 $repoDir = Join-Path $devDir "antigravity-orchestrator"
 New-Item -ItemType Directory -Path $devDir -Force | Out-Null
 
 if (-not (Test-Path (Join-Path $repoDir ".git"))) {
     Write-Host "📦 Cloning ${repoUrl} -> $repoDir..." -ForegroundColor Cyan
-    git clone "${repoUrl}" "$repoDir"
+    $cloneRes = Invoke-GitCmd @("clone", "${repoUrl}", "$repoDir")
+    if ($cloneRes.ExitCode -ne 0) {
+        throw "git clone failed: $($cloneRes.Output)"
+    }
 } else {
     Write-Host "🔄 Updating $repoDir from origin/main..." -ForegroundColor Cyan
-    $curOrigin = git -C "$repoDir" remote get-url origin 2>$null
-    if ($curOrigin -and $curOrigin -like "git@*") {
-        git -C "$repoDir" remote set-url origin "${repoUrl}"
+    $originRes = Invoke-GitCmd @("-C", "$repoDir", "remote", "get-url", "origin")
+    if ($originRes.ExitCode -eq 0 -and $originRes.Output -like "git@*") {
+        Invoke-GitCmd @("-C", "$repoDir", "remote", "set-url", "origin", "${repoUrl}") | Out-Null
     }
-    git -C "$repoDir" stash push -u -m "pre-fleet-bootstrap-backup" 2>$null | Out-Null
-    git -C "$repoDir" fetch origin main
-    git -C "$repoDir" checkout -B main origin/main
-    git -C "$repoDir" reset --hard origin/main
+    Invoke-GitCmd @("-C", "$repoDir", "stash", "push", "-u", "-m", "pre-fleet-bootstrap-backup") | Out-Null
+    $fetchRes = Invoke-GitCmd @("-C", "$repoDir", "fetch", "origin", "main")
+    if ($fetchRes.ExitCode -ne 0) {
+        throw "git fetch origin main failed: $($fetchRes.Output)"
+    }
+    $coRes = Invoke-GitCmd @("-C", "$repoDir", "checkout", "-B", "main", "origin/main")
+    if ($coRes.ExitCode -ne 0) {
+        throw "git checkout -B main failed: $($coRes.Output)"
+    }
+    $resetRes = Invoke-GitCmd @("-C", "$repoDir", "reset", "--hard", "origin/main")
+    if ($resetRes.ExitCode -ne 0) {
+        throw "git reset --hard origin/main failed: $($resetRes.Output)"
+    }
+    Write-Host "   ✓ Repository synchronized to latest origin/main" -ForegroundColor Green
 }
 
-# 3. Write fleet-sync.json BEFORE running install.ps1
-$geminiConfigDir = Join-Path $userHome ".gemini\\config"
-New-Item -ItemType Directory -Path $geminiConfigDir -Force | Out-Null
-$fleetSyncPath = Join-Path $geminiConfigDir "fleet-sync.json"
+# 3. Write BOM-free fleet-sync.json BEFORE running install.ps1
 $fleetCfg = [ordered]@{
-    hubUrl = "${hubUrl}"
-    fleetToken = "${token}"
-    nodeId = "${profile.nodeId}"
-    label = "${profile.label}"
-    location = "${profile.location}"
-    expectedProfile = "${profile.expectedProfile}"
+    hubUrl               = "${hubUrl}"
+    fleetToken           = "${token}"
+    nodeId               = "${profile.nodeId}"
+    label                = "${profile.label}"
+    location             = "${profile.location}"
+    os                   = "${profile.os}"
+    expectedProfile      = "${profile.expectedProfile}"
     dailyFallbackSeconds = 86400
 }
-$fleetCfg | ConvertTo-Json -Depth 5 | Set-Content -Path $fleetSyncPath -Encoding UTF8
-Write-Host "   ✓ Saved $fleetSyncPath" -ForegroundColor Green
+$fleetJson = ($fleetCfg | ConvertTo-Json -Depth 5) + "\`n"
+Write-Utf8NoBom -Path $fleetSyncPath -Content $fleetJson
+Write-Host "   ✓ Saved BOM-free $fleetSyncPath (nodeId=${profile.nodeId})" -ForegroundColor Green
 
 # 4. Run repository installer (sets rules, Turbo CitC, MCP config, Gatekeeper, Silent Daemon & 1x Daily task)
 & (Join-Path $repoDir "install.ps1")
+
+# Re-assert BOM-free fleet-sync.json for target profile
+Write-Utf8NoBom -Path $fleetSyncPath -Content $fleetJson
+
+# 4a. Sync any existing .agents workspaces under $HOME\\Development and $HOME\\OneDrive\\Dev safely
+$initWsScript = Join-Path $repoDir "bin\\agy-init-workspace.ps1"
+if (Test-Path $initWsScript) {
+    foreach ($parentDir in @(
+        (Join-Path $userHome "Development"),
+        (Join-Path $userHome "OneDrive\\Dev")
+    )) {
+        if (Test-Path $parentDir) {
+            Get-ChildItem -Path $parentDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                if (($_.Name -ne "antigravity-orchestrator") -and (Test-Path (Join-Path $_.FullName ".agents"))) {
+                    Write-Host "   🔄 Refreshing existing workspace: $($_.FullName)" -ForegroundColor DarkGray
+                    try { & $initWsScript -WorkspacePath $_.FullName } catch {}
+                }
+            }
+        }
+    }
+}
 
 # 4b. Verify legacy 30m / alternate tasks are gone; elevate once if Admin-owned task resisted non-elevated overwrite
 $needsElevation = $false
@@ -695,15 +944,15 @@ if (-not $isAdmin -and $needsElevation) {
     Write-Host "   & '$repoDir\\install.ps1' -SkipClis" -ForegroundColor White
 }
 
-# 5. Send immediate ACK to Staging Fleet Hub
+# 5. Send immediate ACK to Staging Fleet Hub so workstation flips to ONLINE + IN_SYNC right away
 $daemonJs = Join-Path $userHome ".local\\lib\\agy-fleet\\agy-sync-daemon.js"
 if ((Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path $daemonJs)) {
     try {
-        node "$daemonJs" --once
+        & node "$daemonJs" --once
     } catch {}
 }
 
-Write-Host "✅ ${profile.label} connected to Real-Time SSE Push Hub & 1x Daily fallback!" -ForegroundColor Green
+Write-Host "✅ ${profile.label} cleaned up, configured (UTF-8 no-BOM), and connected to Real-Time SSE Push Hub!" -ForegroundColor Green
 `;
 }
 
@@ -771,9 +1020,24 @@ else
   git -C "\$REPO_DIR" reset --hard origin/main
 fi
 
-# 3. Write ~/.gemini/config/fleet-sync.json (mode 0600)
+# 3. Write ~/.gemini/config/fleet-sync.json (mode 0600) & remediate previous profile if switched
 CONFIG_DIR="\${HOME}/.gemini/config"
 mkdir -p "\$CONFIG_DIR"
+PREV_NODE_ID=""
+if [ -f "\${CONFIG_DIR}/fleet-sync.json" ]; then
+  PREV_NODE_ID=$(jq -r '.nodeId // empty' "\${CONFIG_DIR}/fleet-sync.json" 2>/dev/null || echo "")
+fi
+if [ -n "\$PREV_NODE_ID" ] && [ "\$PREV_NODE_ID" != "${profile.nodeId}" ]; then
+  echo "🧹 Corrective Action: Migrating profile from '\${PREV_NODE_ID}' to '${profile.nodeId}'..."
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user stop agy-sync-daemon.service 2>/dev/null || true
+  fi
+  rm -f "\${CONFIG_DIR}/.agy-sync-daemon.pid"
+  curl -fsSL -X POST "${hubUrl}/release-node" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -d "{\\"previousNodeId\\":\\"\${PREV_NODE_ID}\\",\\"newNodeId\\":\\"${profile.nodeId}\\",\\"hostname\\":\\"\$(hostname)\\"}" >/dev/null 2>&1 || true
+fi
 umask 077
 cat > "\${CONFIG_DIR}/fleet-sync.json" <<'EOF'
 {
@@ -782,6 +1046,7 @@ cat > "\${CONFIG_DIR}/fleet-sync.json" <<'EOF'
   "nodeId": "${profile.nodeId}",
   "label": "${profile.label}",
   "location": "${profile.location}",
+  "os": "${profile.os}",
   "expectedProfile": "${profile.expectedProfile}",
   "dailyFallbackSeconds": 86400
 }
@@ -913,14 +1178,15 @@ const server = http.createServer(async (req, res) => {
       const clientId = `${nodeId}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
       const nowIso = new Date().toISOString();
 
+      reconcileDuplicateHostname(nodeId, qHostname);
       const existing = nodesState[nodeId] || {};
       nodesState[nodeId] = {
         nodeId,
-        label: qLabel || existing.label || nodeId,
-        location: qLocation || existing.location || 'Remote',
-        os: qOs || existing.os || 'Unknown',
-        platform: qPlatform || existing.platform || 'linux',
-        expectedProfile: existing.expectedProfile || nodeId,
+        label: qLabel || CANONICAL_PROFILES[nodeId]?.label || existing.label || nodeId,
+        location: qLocation || CANONICAL_PROFILES[nodeId]?.location || existing.location || 'Remote',
+        os: qOs || CANONICAL_PROFILES[nodeId]?.os || existing.os || 'Unknown',
+        platform: qPlatform || CANONICAL_PROFILES[nodeId]?.platform || existing.platform || 'linux',
+        expectedProfile: CANONICAL_PROFILES[nodeId]?.expectedProfile || existing.expectedProfile || nodeId,
         hostname: qHostname || existing.hostname || null,
         commit: qCommit || existing.commit || null,
         schemaVersion: qSchema || existing.schemaVersion || null,
@@ -996,15 +1262,16 @@ const server = http.createServer(async (req, res) => {
       }
       const nodeId = resolveCanonicalNodeId(body.nodeId, body.os, body.hostname);
       const nowIso = new Date().toISOString();
+      reconcileDuplicateHostname(nodeId, body.hostname, body.previousNodeId || null);
       const existing = nodesState[nodeId] || {};
       nodesState[nodeId] = {
         ...existing,
         nodeId,
-        label: body.label || existing.label || nodeId,
-        location: body.location || existing.location || 'Remote',
-        os: body.os || existing.os || 'Unknown',
-        platform: body.platform || existing.platform || 'linux',
-        expectedProfile: existing.expectedProfile || nodeId,
+        label: body.label || CANONICAL_PROFILES[nodeId]?.label || existing.label || nodeId,
+        location: body.location || CANONICAL_PROFILES[nodeId]?.location || existing.location || 'Remote',
+        os: body.os || CANONICAL_PROFILES[nodeId]?.os || existing.os || 'Unknown',
+        platform: body.platform || CANONICAL_PROFILES[nodeId]?.platform || existing.platform || 'linux',
+        expectedProfile: CANONICAL_PROFILES[nodeId]?.expectedProfile || existing.expectedProfile || nodeId,
         hostname: body.hostname || existing.hostname || null,
         commit: body.commit || existing.commit || null,
         schemaVersion: body.schemaVersion || existing.schemaVersion || null,
@@ -1021,6 +1288,36 @@ const server = http.createServer(async (req, res) => {
         resolveAckWaiters(body.commit, nodeId);
       }
       return sendJson(res, 200, { ok: true, node: nodesState[nodeId] });
+    }
+
+    // 5b. Release Stale / Mistaken Profile Slot (Fleet Token)
+    if (req.method === 'POST' && p === '/api/agy-fleet/release-node') {
+      if (!isFleetAuthorized(req, urlObj)) {
+        return sendJson(res, 401, { ok: false, error: 'Unauthorized: invalid fleet token' });
+      }
+      const rawBody = await readRequestBody(req);
+      let body = {};
+      try {
+        body = JSON.parse(rawBody.toString('utf8') || '{}');
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+      }
+      const previousNodeId = String(body.previousNodeId || '').trim();
+      const newNodeId = String(body.newNodeId || '').trim();
+      const hostname = String(body.hostname || '').trim();
+      let released = false;
+      if (previousNodeId && previousNodeId !== newNodeId && CANONICAL_PROFILES[previousNodeId]) {
+        const prevNode = nodesState[previousNodeId];
+        const hasLiveStream = Array.from(sseClients.values()).some((c) => c.nodeId === previousNodeId);
+        const sameHost = Boolean(prevNode?.hostname && hostname && prevNode.hostname.trim().toLowerCase() === hostname.toLowerCase());
+        if (!hasLiveStream || sameHost || !prevNode?.hostname) {
+          if (hasLiveStream) closeStreamsForNode(previousNodeId);
+          resetNodeToPending(previousNodeId);
+          persistNodes();
+          released = true;
+        }
+      }
+      return sendJson(res, 200, { ok: true, released, previousNodeId, nodes: getOrderedNodes() });
     }
 
     // 6. Fleet Status (Fleet Token OR Admin JWT)

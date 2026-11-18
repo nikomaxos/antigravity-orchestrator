@@ -25,7 +25,7 @@ const FLEET_CONFIG_PATH = process.env.AGY_FLEET_SYNC_FILE || path.join(GEMINI_CO
 const TOOLS = [
   {
     name: 'agy_fleet_status',
-    description: 'Inspect real-time online status, git commit SHA, schema_version, and Gatekeeper health of all Antigravity workstations (DevBox, Windows 11 Pro Oraiokastro, Omarchy Linux Kopanos).',
+    description: 'Inspect real-time online status, git commit SHA, schema_version, and Gatekeeper health of all Antigravity workstations (DevBox, Nick Laptop, Soti-Laptop Windows 11 Pro Oraiokastro, Omarchy Linux Kopanos).',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -61,7 +61,7 @@ function loadFleetConfig() {
   if (!fs.existsSync(FLEET_CONFIG_PATH)) {
     throw new Error(`Fleet config not found at ${FLEET_CONFIG_PATH}. Run workstation bootstrap first.`);
   }
-  const parsed = JSON.parse(fs.readFileSync(FLEET_CONFIG_PATH, 'utf8'));
+  const parsed = JSON.parse(fs.readFileSync(FLEET_CONFIG_PATH, 'utf8').replace(/^\uFEFF/, ''));
   if (!parsed.hubUrl || !parsed.fleetToken) {
     throw new Error(`Invalid fleet-sync.json at ${FLEET_CONFIG_PATH}`);
   }
