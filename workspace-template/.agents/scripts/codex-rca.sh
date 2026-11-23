@@ -3,8 +3,8 @@
 # Cross-Model Deep RCA (`codex-rca.sh`) — Read-Only Multi-CLI Cascade
 # =============================================================================
 # Cascade order:
-#   1. Pool B: OpenAI Codex CLI (`gpt-6-astra`, effort `xhigh`)
-#   2. Pool C: Anthropic Claude Code CLI (`opus` -> `sonnet`, effort `high`)
+#   1. Pool B: OpenAI Codex CLI (`gpt-6-astra`, effort `xhigh`, skips if in cooldown)
+#   2. Pool C: Anthropic Claude Code CLI (`claude-sonnet-5-5` high bounded, `--opus` opt-in)
 #   3. Pool D: OpenCode CLI + DeepSeek API (`deepseek/deepseek-v4-pro`)
 #   4. Pool A: Exit 2 -> spawn internal `Gemini 4 Carbon High` subagent
 # =============================================================================
@@ -17,12 +17,14 @@ cd "$CODEX_REPO_ROOT"
 
 MODEL="$CODEX_RCA_MODEL"; EFFORT="$CODEX_RCA_EFFORT"; ATTACH=(); PROBLEM=""
 PREFER_CLI="auto"
+RCA_USE_OPUS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -a|--attach) ATTACH+=("${2:?missing file}"); shift 2 ;;
     -e|--effort) EFFORT="${2:?missing level}"; shift 2 ;;
     -m|--model)  MODEL="${2:?missing model}"; shift 2 ;;
     --cli)       PREFER_CLI="${2:?missing cli (auto|codex|claude|opencode)}"; shift 2 ;;
+    --opus)      RCA_USE_OPUS=1; shift ;;
     -h|--help)   sed -n '2,15p' "$0"; exit 0 ;;
     --) shift; PROBLEM="$*"; break ;;
     *)  PROBLEM="${PROBLEM:+$PROBLEM }$1"; shift ;;
@@ -47,12 +49,13 @@ commands (git log/show/diff/blame, cat, grep, rg, find, ls) on directly relevant
 If a command is blocked by the sandbox (e.g. docker, ssh, network), list it under
 "Commands for the implementation agent".
 
-# METHOD
+# METHOD (EVIDENCE-FIRST & BOUNDED)
 1. Restate the symptom precisely.
-2. Trace the real execution path in the code (entry point -> failure point).
-3. Form hypotheses, then confirm or eliminate each with evidence (`file:line`, git history, logs).
-4. Identify THE root cause (not the symptom). If uncertain, rank candidates with probabilities.
-5. Propose the minimal correct fix (respecting the No-Hardcoded-Routing UI-first invariant!) and its regression surface.
+2. Start strictly from the evidence below & directly referenced files (`grep`/`cat` specific functions only — do NOT run broad sweeps of unrelated directories or blow context!).
+3. Trace the real execution path in the code (entry point -> failure point).
+4. Form hypotheses, then confirm or eliminate each with evidence (`file:line`, git history, logs).
+5. Identify THE root cause (not the symptom). If uncertain, rank candidates with probabilities.
+6. Propose the minimal correct fix (respecting the No-Hardcoded-Routing UI-first invariant!) and its regression surface.
 
 # OUTPUT (Markdown in Greek; keep identifiers/paths/commands in English)
 ## Σύνοψη
@@ -78,8 +81,8 @@ EOF
     echo
     if [ -f "$f" ]; then
       SIZE=$(wc -c < "$f")
-      echo "# ATTACHMENT: $f (${SIZE} bytes$([ "$SIZE" -gt "$CODEX_MAX_ATTACH_BYTES" ] && echo ", last ${CODEX_MAX_ATTACH_BYTES} shown"))"
-      echo '```'; tail -c "$CODEX_MAX_ATTACH_BYTES" "$f"; echo; echo '```'
+      echo "# ATTACHMENT: $f (${SIZE} bytes$([ "$SIZE" -gt "$CODEX_MAX_ATTACH_BYTES" ] && echo ", bounded to ${CODEX_MAX_ATTACH_BYTES}"))"
+      echo '```'; codex_attach_file "$f" "$CODEX_MAX_ATTACH_BYTES"; echo; echo '```'
     else
       echo "# ATTACHMENT: $f (NOT FOUND)"
     fi
@@ -87,36 +90,69 @@ EOF
 } > "$PROMPT_FILE"
 
 USED_LABEL=""
+CL_RCA="${CLAUDE_RCA_MODEL:-claude-sonnet-5-5}"
+[ "$RCA_USE_OPUS" -eq 1 ] && CL_RCA="${CLAUDE_RCA_OPUS_MODEL:-claude-opus-5-5}"
+CL_EFF="${CLAUDE_RCA_EFFORT:-high}"
+
+# Check all-cooldown edge case for auto mode
+ALL_RCA_COOLDOWN=0
+if [ "$PREFER_CLI" = "auto" ]; then
+  if pool_cooldown_is_active "pool_b:${MODEL}" >/dev/null 2>&1 && \
+     pool_cooldown_is_active "pool_c:${CL_RCA}" >/dev/null 2>&1 && \
+     pool_cooldown_is_active "pool_d:${OPENCODE_PRO_MODEL}" >/dev/null 2>&1; then
+    ALL_RCA_COOLDOWN=1
+    echo "⚠️  All RCA external pools appear in local cooldown cache — probing primary pool once before Pool A fallback."
+  fi
+fi
 
 if [ "$PREFER_CLI" = "auto" ] || [ "$PREFER_CLI" = "codex" ]; then
-  echo "🤖 [Pool B] Codex RCA: model=${MODEL} effort=${EFFORT} (read-only)..."
-  codex_run "rca" "$MODEL" "$EFFORT" "" "$OUT" "$PROMPT_FILE"
-  [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ Codex ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
-  [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="Codex (${MODEL}, effort ${EFFORT})"
+  CD_B=$(pool_cooldown_is_active "pool_b:${MODEL}" || true)
+  if [ -n "$CD_B" ] && [ "$ALL_RCA_COOLDOWN" -eq 0 ] && [ "$PREFER_CLI" = "auto" ]; then
+    echo "⏭️  [Pool B] Skipping Codex RCA (${MODEL}) — in cooldown (${CD_B})."
+    CODEX_RUN_STATUS="RATE_LIMITED"; CODEX_RUN_ERROR="cooldown: ${CD_B}"
+  else
+    echo "🤖 [Pool B] Codex RCA: model=${MODEL} effort=${EFFORT} (read-only)..."
+    codex_run "rca" "$MODEL" "$EFFORT" "" "$OUT" "$PROMPT_FILE"
+    [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ Codex ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
+    [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="Codex (${MODEL}, effort ${EFFORT})"
+  fi
 fi
 
 if [ -z "$USED_LABEL" ] && { [ "$PREFER_CLI" = "auto" ] || [ "$PREFER_CLI" = "claude" ]; }; then
-  CL_RCA="${CLAUDE_RCA_MODEL:-claude-opus-5-5}"
-  CL_EFF="${CLAUDE_RCA_EFFORT:-high}"
-  echo "🤖 [Pool C] Failing over RCA to Claude Code CLI (model=${CL_RCA}, effort=${CL_EFF})..."
-  claude_run "rca" "$CL_RCA" "$CL_EFF" "" "$OUT" "$PROMPT_FILE"
-  [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
-  if [ "$CODEX_RUN_STATUS" = "RATE_LIMITED" ]; then
-    CL_FALLBACK="${CLAUDE_R2_MODEL:-claude-sonnet-5-5}"
-    echo "ℹ️  Claude ${CL_RCA} rate-limited; retrying RCA with Claude ${CL_FALLBACK} (effort=high)..."
-    claude_run "rca" "$CL_FALLBACK" "high" "" "$OUT" "$PROMPT_FILE"
+  CD_C=$(pool_cooldown_is_active "pool_c:${CL_RCA}" || true)
+  if [ -n "$CD_C" ] && [ "$PREFER_CLI" = "auto" ]; then
+    echo "⏭️  [Pool C] Skipping Claude RCA (${CL_RCA}) — in cooldown (${CD_C})."
+    CODEX_RUN_STATUS="RATE_LIMITED"; CODEX_RUN_ERROR="cooldown: ${CD_C}"
+  else
+    echo "🤖 [Pool C] Failing over RCA to Claude Code CLI (model=${CL_RCA}, effort=${CL_EFF}, max_turns=${CLAUDE_MAX_TURNS_RCA:-16})..."
+    claude_run "rca" "$CL_RCA" "$CL_EFF" "" "$OUT" "$PROMPT_FILE"
     [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
-    [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="Claude Code CLI (${CL_FALLBACK}, effort high)"
-  elif [ "$CODEX_RUN_STATUS" = "OK" ]; then
-    USED_LABEL="Claude Code CLI (${CL_RCA}, effort ${CL_EFF})"
+    if [ "$CODEX_RUN_STATUS" = "RATE_LIMITED" ] && [[ "$CL_RCA" == *opus* ]]; then
+      CL_FALLBACK="${CLAUDE_RCA_MODEL:-claude-sonnet-5-5}"
+      CD_CF=$(pool_cooldown_is_active "pool_c:${CL_FALLBACK}" || true)
+      if [ -z "$CD_CF" ]; then
+        echo "ℹ️  Claude ${CL_RCA} rate-limited; retrying RCA with Claude ${CL_FALLBACK} (effort=high)..."
+        claude_run "rca" "$CL_FALLBACK" "high" "" "$OUT" "$PROMPT_FILE"
+        [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
+        [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="Claude Code CLI (${CL_FALLBACK}, effort high)"
+      fi
+    elif [ "$CODEX_RUN_STATUS" = "OK" ]; then
+      USED_LABEL="Claude Code CLI (${CL_RCA}, effort ${CL_EFF})"
+    fi
   fi
 fi
 
 if [ -z "$USED_LABEL" ] && { [ "$PREFER_CLI" = "auto" ] || [ "$PREFER_CLI" = "opencode" ]; }; then
-  echo "🤖 [Pool D] Failing over RCA to OpenCode DeepSeek (${OPENCODE_PRO_MODEL})..."
-  opencode_run "rca" "$OPENCODE_PRO_MODEL" "" "$OUT" "$PROMPT_FILE" 1
-  [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
-  [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="OpenCode (${OPENCODE_PRO_MODEL})"
+  CD_D=$(pool_cooldown_is_active "pool_d:${OPENCODE_PRO_MODEL}" || true)
+  if [ -n "$CD_D" ] && [ "$PREFER_CLI" = "auto" ]; then
+    echo "⏭️  [Pool D] Skipping OpenCode RCA (${OPENCODE_PRO_MODEL}) — in cooldown (${CD_D})."
+    CODEX_RUN_STATUS="RATE_LIMITED"; CODEX_RUN_ERROR="cooldown: ${CD_D}"
+  else
+    echo "🤖 [Pool D] Failing over RCA to OpenCode DeepSeek (${OPENCODE_PRO_MODEL})..."
+    opencode_run "rca" "$OPENCODE_PRO_MODEL" "" "$OUT" "$PROMPT_FILE" 1
+    [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
+    [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="OpenCode (${OPENCODE_PRO_MODEL})"
+  fi
 fi
 
 if [ -n "$USED_LABEL" ] && [ -s "$OUT" ]; then

@@ -3,12 +3,14 @@
 # Cross-Model Council Review Gate (`run-codex-review-gate.sh`)
 # =============================================================================
 # Independent pre-commit code + OWASP review of the STAGED diff across 4 Pools:
-#   1. Pool B (Primary):  OpenAI Codex CLI (`R1`: terra med, `R2`: astra med, `R3`: astra high)
-#                         + Stateful Round-2+ Delta Review (`codex exec resume`)!
-#   2. Pool C (Failover): Anthropic Claude Code CLI (`R1`: sonnet low, `R2`: sonnet high, `R3`: opus/sonnet high)
-#   3. Pool D (Failover): OpenCode CLI + DeepSeek API (`deepseek/deepseek-v4-pro`)
-#   4. Pool A (Last Resort `--fallback`): Internal Antigravity `Gemini 4 Carbon High` subagent
-#      (ONLY allowed if Pools B + C + D were all RATE_LIMITED or UNAVAILABLE!)
+#   Dynamic per-tier cascades from `model-routing.json` (`review_cascades.<tier>.cascade`):
+#   - R1 (`gpt-6.1-terra med` -> `claude-sonnet-5-5 med` -> `deepseek-v4-pro`)
+#   - R2 (`gpt-6.1-sol high` -> `claude-sonnet-5-5 high` -> `deepseek-v4-pro`)
+#   - R3 (**Pool C `claude-opus-5-5 high` primary** -> Pool B `gpt-6-astra high` -> Pool D `deepseek-v4-pro`)
+#   - Stateful Round-2+ Delta Resume (`codex -s read-only -C ... exec resume`) when Round 1 ran on Pool B
+#   - Shared persistent pool cooldown cache (`~/.gemini/cache/pool-cooldowns.json`)
+#   - Pool A Last-Resort `--fallback`: Internal `Gemini 4 Carbon High` subagent
+#     (ONLY allowed if Pools B + C + D were all RATE_LIMITED or UNAVAILABLE!)
 #
 # Writes (HMAC-signed): .agent-state/codex-review.json
 # Reports:              .agent-reports/codex/review-latest.{json,md}
@@ -16,7 +18,8 @@
 set -euo pipefail
 
 # Canonical environment: caller overrides must not influence gate outcome
-unset CODEX_BIN CODEX_HOME CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_TIMEOUT_SECS CODEX_MAX_DIFF_BYTES DEEPSEEK_API_KEY ANTHROPIC_API_KEY
+unset CODEX_BIN CODEX_HOME CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_TIMEOUT_SECS CODEX_MAX_DIFF_BYTES DEEPSEEK_API_KEY ANTHROPIC_API_KEY \
+      MODEL_ROUTING_FILE AGY_POOL_COOLDOWN_FILE AGY_IGNORE_COOLDOWN CLAUDE_RUN_MAX_TURNS CLAUDE_MAX_TURNS_REVIEW CLAUDE_MAX_TURNS_RCA CLAUDE_MAX_TURNS_DEFAULT FRONTIER_COOLDOWN_SECS
 export HOME="/home/nick"
 export PATH="/home/nick/.local/bin:/home/nick/.opencode/bin:/home/nick/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -100,15 +103,15 @@ TIER=$(codex_classify_diff_tier)
 case "$TIER" in
   R1)
     C_MOD="$CODEX_R1_MODEL"; C_EFF="$CODEX_R1_EFFORT"
-    CL_MOD="$CLAUDE_R1_MODEL"; CL_EFF="$CLAUDE_R1_EFFORT"
+    CL_MOD="$CLAUDE_R1_MODEL"; CL_EFF="$CLAUDE_R1_EFFORT"; CL_MAX_TURNS="${CLAUDE_R1_MAX_TURNS:-10}"
     ;;
   R2)
     C_MOD="$CODEX_R2_MODEL"; C_EFF="$CODEX_R2_EFFORT"
-    CL_MOD="$CLAUDE_R2_MODEL"; CL_EFF="$CLAUDE_R2_EFFORT"
+    CL_MOD="$CLAUDE_R2_MODEL"; CL_EFF="$CLAUDE_R2_EFFORT"; CL_MAX_TURNS="${CLAUDE_R2_MAX_TURNS:-12}"
     ;;
   *)
     C_MOD="$CODEX_R3_MODEL"; C_EFF="$CODEX_R3_EFFORT"
-    CL_MOD="$CLAUDE_R3_MODEL"; CL_EFF="$CLAUDE_R3_EFFORT"
+    CL_MOD="$CLAUDE_R3_MODEL"; CL_EFF="$CLAUDE_R3_EFFORT"; CL_MAX_TURNS="${CLAUDE_R3_MAX_TURNS:-16}"
     ;;
 esac
 
@@ -221,10 +224,12 @@ EOF
   PREV_THREAD=$(prev_field '.review_thread_id')
   LAST_PATCH_FILE="${CODEX_REPORT_DIR}/last-reviewed.patch"
   LAST_REPORT_JSON="${CODEX_REPORT_DIR}/review-latest.json"
-  EFFECTIVE_PROMPT_FILE="$PROMPT_FILE"
+  DELTA_ELIGIBLE=0
+  DELTA_PROMPT=""
 
   if [ "$PREV_STATUS" = "FAIL" ] && [ "$PREV_HEAD" = "$HEAD_SHA" ] && \
      [ -f "$LAST_PATCH_FILE" ] && [ -f "$LAST_REPORT_JSON" ]; then
+    DELTA_ELIGIBLE=1
     DELTA_PROMPT="${CODEX_REPORT_DIR}/review-delta-${STAMP_PROMPT}.prompt.md"
     {
       cat <<'DELTA_EOF'
@@ -250,9 +255,34 @@ DELTA_EOF
       head -c "$CODEX_MAX_DIFF_BYTES" "$CUR_PATCH_TMP"
       echo '```'
     } > "$DELTA_PROMPT"
-    EFFECTIVE_PROMPT_FILE="$DELTA_PROMPT"
 
-    if [ "$PREV_REVIEWER" = "codex" ] && [ -n "$PREV_THREAD" ] && ! codex_pool_in_cooldown "codex:${C_MOD}"; then
+    # Also embed blocking findings & interdiff in the full prompt for stateless Round-2+ reviewers (Pool C / D / fresh failover)
+    {
+      echo
+      echo "# ROUND-2+ CONVERGENCE CONTEXT (Previous CRITICAL/HIGH Findings & Interdiff)"
+      echo "Verify whether each previous blocking finding below is resolved and focus on the interdiff hunks for regressions:"
+      jq '[.findings[] | select(.severity=="CRITICAL" or .severity=="HIGH")]' "$LAST_REPORT_JSON" 2>/dev/null || echo "[]"
+      echo
+      echo "## Interdiff Since Previous Staged Review"
+      echo '```diff'
+      diff -u "$LAST_PATCH_FILE" "$CUR_PATCH_TMP" | head -c 100000 || true
+      echo '```'
+    } >> "$PROMPT_FILE"
+  fi
+
+  _run_review_pool_b() {
+    local force_probe="${1:-0}" cd_info=""
+    if [ "$force_probe" -eq 0 ]; then
+      cd_info=$(pool_cooldown_is_active "pool_b:${C_MOD}" || true)
+      if [ -n "$cd_info" ]; then
+        echo "⏭️  [Pool B] Deferring Codex (${C_MOD}) — in cooldown (${cd_info})."
+        SKIPPED_COOLDOWN_POOLS+=("pool_b")
+        return 0
+      fi
+    fi
+
+    # Attempt stateful delta resume ONLY if Round 1 ran on Codex with a valid thread ID
+    if [ "$DELTA_ELIGIBLE" -eq 1 ] && [ "$PREV_REVIEWER" = "codex" ] && [[ "$PREV_THREAD" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$ ]]; then
       echo "🔄 Cross-Model Gate [Tier=${TIER}]: Stateful Delta Resume on Codex thread ${PREV_THREAD:0:12} (${C_MOD}, effort=${C_EFF})..."
       codex_run_resume "review" "$PREV_THREAD" "$C_MOD" "$C_EFF" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$DELTA_PROMPT"
       if [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ]; then
@@ -261,86 +291,119 @@ DELTA_EOF
         exit 3
       elif [ "$CODEX_RUN_STATUS" = "OK" ] && validate_review_shape "$RAW_OUT"; then
         REVIEW_SUCCEEDED=1; REVIEWER="codex"; MODEL_USED="$C_MOD"; EFFORT_USED="$C_EFF"; THREAD_USED="$PREV_THREAD"
+        return 0
+      elif [ "$CODEX_RUN_STATUS" = "RATE_LIMITED" ] || [ "$CODEX_RUN_STATUS" = "UNAVAILABLE" ]; then
+        echo "⚠️  [Pool B] Codex resume ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+        CASCADE_ERRORS="${CASCADE_ERRORS}codex-resume:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
+        return 0
       else
         [ "$CODEX_RUN_STATUS" = "OK" ] && { CODEX_RUN_STATUS="SCHEMA_ERROR"; CODEX_RUN_ERROR="Invalid review JSON shape"; }
-        echo "ℹ️  Delta resume returned ${CODEX_RUN_STATUS} (${CODEX_RUN_ERROR}) — falling back to review cascade."
-        CASCADE_ERRORS="codex-resume:${CODEX_RUN_STATUS}; "
+        echo "ℹ️  Delta resume returned ${CODEX_RUN_STATUS} (${CODEX_RUN_ERROR}) — trying fresh Codex review."
+        CASCADE_ERRORS="${CASCADE_ERRORS}codex-resume:${CODEX_RUN_STATUS}; "
       fi
     fi
-  fi
 
-  # --- Pool B: Fresh OpenAI Codex CLI ---
-  if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
-    if codex_pool_in_cooldown "codex:${C_MOD}"; then
-      echo "⏭️  [Pool B] Skipping Codex (${C_MOD}) — in cooldown from recent RATE_LIMITED/UNAVAILABLE."
-      CASCADE_ERRORS="${CASCADE_ERRORS}codex:RATE_LIMITED(cooldown); "
-    else
-      echo "🤖 [Pool B] Codex Review [Tier=${TIER}]: model=${C_MOD} effort=${C_EFF} files=$(codex_staged_files | wc -l) diff=${DIFF_BYTES}B"
-      codex_run "review" "$C_MOD" "$C_EFF" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$EFFECTIVE_PROMPT_FILE"
-      if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
-        CODEX_RUN_STATUS="SCHEMA_ERROR"
-        CODEX_RUN_ERROR="Codex output failed JSON schema validation"
-      fi
-      if [ "$CODEX_RUN_STATUS" = "OK" ]; then
-        REVIEW_SUCCEEDED=1; REVIEWER="codex"; MODEL_USED="$C_MOD"; EFFORT_USED="$C_EFF"; THREAD_USED="$CODEX_LAST_THREAD_ID"
-      elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
-        rm -f "$CUR_PATCH_TMP"
-        echo "❌ Codex ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
-        exit 3
-      else
-        echo "⚠️  [Pool B] Codex ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
-        CASCADE_ERRORS="${CASCADE_ERRORS}codex:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
-      fi
+    echo "🤖 [Pool B] Codex Review [Tier=${TIER}]: model=${C_MOD} effort=${C_EFF} files=$(codex_staged_files | wc -l) diff=${DIFF_BYTES}B"
+    codex_run "review" "$C_MOD" "$C_EFF" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$PROMPT_FILE"
+    if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
+      CODEX_RUN_STATUS="SCHEMA_ERROR"
+      CODEX_RUN_ERROR="Codex output failed JSON schema validation"
     fi
-  fi
-
-  # --- Pool C: Anthropic Claude Code CLI Failover ---
-  if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
-    if codex_pool_in_cooldown "claude:${CL_MOD}" && codex_pool_in_cooldown "claude:${CLAUDE_R2_MODEL:-claude-sonnet-5-5}"; then
-      echo "⏭️  [Pool C] Skipping Claude CLI (${CL_MOD}/${CLAUDE_R2_MODEL:-claude-sonnet-5-5}) — in cooldown from recent RATE_LIMITED/UNAVAILABLE."
-      CASCADE_ERRORS="${CASCADE_ERRORS}claude:RATE_LIMITED(cooldown); "
+    if [ "$CODEX_RUN_STATUS" = "OK" ]; then
+      REVIEW_SUCCEEDED=1; REVIEWER="codex"; MODEL_USED="$C_MOD"; EFFORT_USED="$C_EFF"; THREAD_USED="$CODEX_LAST_THREAD_ID"
+    elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
+      rm -f "$CUR_PATCH_TMP"
+      echo "❌ Codex ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+      exit 3
     else
-      echo "🤖 [Pool C] Failing over to Claude Code CLI [Tier=${TIER}]: model=${CL_MOD} effort=${CL_EFF}..."
-      claude_run "review" "$CL_MOD" "$CL_EFF" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$EFFECTIVE_PROMPT_FILE"
-      # If R3 opus hit Claude Pro 5h cap, try sonnet high before moving to Pool D!
-      if [ "$CODEX_RUN_STATUS" = "RATE_LIMITED" ]; then
+      echo "⚠️  [Pool B] Codex ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+      CASCADE_ERRORS="${CASCADE_ERRORS}codex:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
+    fi
+  }
+
+  _run_review_pool_c() {
+    local force_probe="${1:-0}" c_cd="" s_cd="" skipped_opus_cache=0
+    local cl_target="$CL_MOD" cl_eff="$CL_EFF"
+    local retry_sonnet="${CLAUDE_R3_FALLBACK2:-${CLAUDE_R2_MODEL:-claude-sonnet-5-5}}"
+    local prompt_c="$PROMPT_FILE"
+
+    if [ "$force_probe" -eq 0 ]; then
+      c_cd=$(pool_cooldown_is_active "pool_c:${CL_MOD}" || true)
+      if [ -n "$c_cd" ]; then
         case "$CL_MOD" in
           *opus*)
-            retry_sonnet="${CLAUDE_R2_MODEL:-claude-sonnet-5-5}"
-            echo "ℹ️  Claude ${CL_MOD} rate-limited; retrying Pool C with model=${retry_sonnet} effort=high..."
-            claude_run "review" "$retry_sonnet" "high" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$EFFECTIVE_PROMPT_FILE"
-            CL_MOD="$retry_sonnet"; CL_EFF="high"
+            s_cd=$(pool_cooldown_is_active "pool_c:${retry_sonnet}" || true)
+            if [ -n "$s_cd" ]; then
+              echo "⏭️  [Pool C] Deferring Claude CLI (${CL_MOD} / ${retry_sonnet}) — in cooldown (${s_cd})."
+              SKIPPED_COOLDOWN_POOLS+=("pool_c")
+              return 0
+            fi
+            echo "⏭️  [Pool C] Claude ${CL_MOD} in cooldown (${c_cd}); switching to ${retry_sonnet} (high)..."
+            skipped_opus_cache=1
+            cl_target="$retry_sonnet"; cl_eff="high"
+            ;;
+          *)
+            echo "⏭️  [Pool C] Deferring Claude CLI (${CL_MOD}) — in cooldown (${c_cd})."
+            SKIPPED_COOLDOWN_POOLS+=("pool_c")
+            return 0
             ;;
         esac
       fi
-      if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
-        CODEX_RUN_STATUS="SCHEMA_ERROR"
-        CODEX_RUN_ERROR="Claude CLI output failed JSON schema validation"
-      fi
-      if [ "$CODEX_RUN_STATUS" = "OK" ]; then
-        REVIEW_SUCCEEDED=1; REVIEWER="claude-cli"; MODEL_USED="claude-${CL_MOD}"; EFFORT_USED="$CL_EFF"; THREAD_USED=""
-      elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
-        rm -f "$CUR_PATCH_TMP"
-        echo "❌ Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
-        exit 3
-      else
-        echo "⚠️  [Pool C] Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
-        CASCADE_ERRORS="${CASCADE_ERRORS}claude:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
+    fi
+
+    echo "🤖 [Pool C] Claude Code CLI Review [Tier=${TIER}]: model=${cl_target} effort=${cl_eff} max_turns=${CL_MAX_TURNS} files=$(codex_staged_files | wc -l) diff=${DIFF_BYTES}B"
+    CLAUDE_RUN_MAX_TURNS="$CL_MAX_TURNS" claude_run "review" "$cl_target" "$cl_eff" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$prompt_c"
+    if [ "$CODEX_RUN_STATUS" = "RATE_LIMITED" ]; then
+      case "$cl_target" in
+        *opus*)
+          local son_cd=""
+          [ "$force_probe" -eq 0 ] && son_cd=$(pool_cooldown_is_active "pool_c:${retry_sonnet}" || true)
+          if [ -n "$son_cd" ]; then
+            echo "⏭️  Claude ${retry_sonnet} also in cooldown (${son_cd})."
+          else
+            echo "ℹ️  Claude ${cl_target} rate-limited; retrying Pool C with model=${retry_sonnet} effort=high..."
+            CLAUDE_RUN_MAX_TURNS="$CL_MAX_TURNS" claude_run "review" "$retry_sonnet" "high" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$prompt_c"
+            cl_target="$retry_sonnet"; cl_eff="high"
+          fi
+          ;;
+      esac
+    fi
+    if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
+      CODEX_RUN_STATUS="SCHEMA_ERROR"
+      CODEX_RUN_ERROR="Claude CLI output failed JSON schema validation"
+    fi
+    if [ "$CODEX_RUN_STATUS" = "OK" ]; then
+      REVIEW_SUCCEEDED=1; REVIEWER="claude-cli"; MODEL_USED="claude-${cl_target}"; EFFORT_USED="$cl_eff"; THREAD_USED=""
+    elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
+      rm -f "$CUR_PATCH_TMP"
+      echo "❌ Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+      exit 3
+    else
+      echo "⚠️  [Pool C] Claude CLI ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
+      CASCADE_ERRORS="${CASCADE_ERRORS}claude:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
+      [ "$skipped_opus_cache" -eq 1 ] && SKIPPED_COOLDOWN_POOLS+=("pool_c")
+    fi
+  }
+
+  _run_review_pool_d() {
+    local force_probe="${1:-0}" opencode_rev_model cd_info=""
+    opencode_rev_model="${OPENCODE_REVIEW_MODEL:-deepseek/deepseek-v4-pro}"
+    if [ "$force_probe" -eq 0 ]; then
+      cd_info=$(pool_cooldown_is_active "pool_d:${opencode_rev_model}" || true)
+      if [ -n "$cd_info" ]; then
+        echo "⏭️  [Pool D] Deferring OpenCode (${opencode_rev_model}) — in cooldown (${cd_info})."
+        SKIPPED_COOLDOWN_POOLS+=("pool_d")
+        return 0
       fi
     fi
-  fi
-
-  # --- Pool D: OpenCode + DeepSeek Paid API Failover ---
-  if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
-    opencode_rev_model="${OPENCODE_REVIEW_MODEL:-deepseek/deepseek-v4-pro}"
     echo "🤖 [Pool D] Failing over to OpenCode DeepSeek API [Tier=${TIER}]: model=${opencode_rev_model}..."
-    opencode_run "review" "$opencode_rev_model" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$EFFECTIVE_PROMPT_FILE" 1
+    opencode_run "review" "$opencode_rev_model" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$PROMPT_FILE" 1
     if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
       CODEX_RUN_STATUS="SCHEMA_ERROR"
       CODEX_RUN_ERROR="OpenCode output failed JSON schema validation"
     fi
     if [ "$CODEX_RUN_STATUS" = "OK" ]; then
-      REVIEW_SUCCEEDED=1; REVIEWER="opencode-deepseek"; MODEL_USED="$OPENCODE_PRO_MODEL"; EFFORT_USED="high"; THREAD_USED=""
+      REVIEW_SUCCEEDED=1; REVIEWER="opencode-deepseek"; MODEL_USED="$opencode_rev_model"; EFFORT_USED="high"; THREAD_USED=""
     elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
       rm -f "$CUR_PATCH_TMP"
       echo "❌ OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
@@ -349,6 +412,31 @@ DELTA_EOF
       echo "⚠️  [Pool D] OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
       CASCADE_ERRORS="${CASCADE_ERRORS}opencode:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
     fi
+  }
+
+  read -r -a REVIEW_POOLS <<< "$(routing_get_review_cascade "$TIER")"
+  SKIPPED_COOLDOWN_POOLS=()
+  for p in "${REVIEW_POOLS[@]}"; do
+    [ "$REVIEW_SUCCEEDED" -eq 1 ] && break
+    case "$p" in
+      pool_b) _run_review_pool_b 0 ;;
+      pool_c) _run_review_pool_c 0 ;;
+      pool_d) _run_review_pool_d 0 ;;
+    esac
+  done
+
+  # Security invariant: NEVER unlock Pool A self-review (--fallback) while ANY pool was only cache-skipped!
+  if [ "$REVIEW_SUCCEEDED" -eq 0 ] && [ "${#SKIPPED_COOLDOWN_POOLS[@]}" -gt 0 ] && \
+     ! echo "$CASCADE_ERRORS" | grep -qE '(codex|claude|opencode):(ERROR|TIMEOUT|SCHEMA_ERROR|INTEGRITY_VIOLATION)'; then
+    echo "⚠️  No uncached pool succeeded; performing live verification probe(s) on deferred pool(s): ${SKIPPED_COOLDOWN_POOLS[*]}..."
+    for p in "${SKIPPED_COOLDOWN_POOLS[@]}"; do
+      [ "$REVIEW_SUCCEEDED" -eq 1 ] && break
+      case "$p" in
+        pool_b) _run_review_pool_b 1 ;;
+        pool_c) _run_review_pool_c 1 ;;
+        pool_d) _run_review_pool_d 1 ;;
+      esac
+    done
   fi
 
   # Verify staged diff did not change mid-run
@@ -361,7 +449,7 @@ DELTA_EOF
   if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
     rm -f "$CUR_PATCH_TMP"
     # Unlock Pool A fallback ONLY if every attempted external CLI was RATE_LIMITED or UNAVAILABLE
-    if echo "$CASCADE_ERRORS" | grep -qE '(codex|claude|opencode):(ERROR|TIMEOUT|SCHEMA_ERROR|INTEGRITY_VIOLATION)'; then
+    if echo "$CASCADE_ERRORS" | grep -qE '(codex|claude|opencode):(ERROR|TIMEOUT|SCHEMA_ERROR|INTEGRITY_VIOLATION|MAX_TURNS)'; then
       echo "❌ External CLI review failed with hard fault (${CASCADE_ERRORS}). Fix the error and re-run."
       exit 3
     fi

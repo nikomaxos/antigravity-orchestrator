@@ -22,7 +22,7 @@ When this skill is activated (e.g. via `/codex`), Antigravity acts as a **thin t
 - **`--tier deep`** (`T4` — concurrency races, distributed systems, protocols, security architecture):
   Runs `gpt-6-astra` (`effort=xhigh`, fallback `gpt-6.1-sol`) with bounded sub-agents allowed (`max 2`).
 
-> **Single-Writer Workspace Protection:** If the target workspace contains `.agents/hooks.json`, `codex-orchestrate.sh` automatically runs in **kernel-enforced `-s read-only` Architect/Patch-Producer mode** so it never violates `protect-enforcement.sh`. Antigravity then applies the proposed patch cleanly and runs the workspace gates!
+> **Single-Writer Workspace Protection:** If the target workspace contains `.agents/hooks.json`, `codex-orchestrate.sh` automatically runs in **kernel-enforced `-s read-only` Architect/Patch-Producer mode** (with `-s read-only -C <dir>` placed before `exec resume` and `-c 'sandbox_mode="read-only"'` for stateful follow-up turns) so it never violates `protect-enforcement.sh`. Antigravity then applies the proposed patch cleanly and runs the workspace gates!
 
 ## 2. How to Execute
 

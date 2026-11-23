@@ -12,11 +12,11 @@ Full rules: `.agents/rules/40-codex-integration.md`. Antigravity is the **SINGLE
 
 ## A. Deep Debugging / Root-Cause Analysis (`codex-rca.sh`)
 1. Collect concrete evidence first (logs, failing request, stack trace) into `/tmp/rca-logs.txt` (use a `T1` Explorer — `swarm` `Gemini 4 Hydrogen Low`, or Pool D `frontier-orchestrate.sh --tier flash` `DeepSeek-Flash` for massive raw log dumps; NEVER `Gemini 3.8 Flash` outside `browser` — if log slicing >5 files).
-2. Run the Multi-CLI RCA cascade (`Codex gpt-6-astra xhigh` → `Claude opus/sonnet high` → `OpenCode deepseek-v4-pro` → exit `2`):
+2. Run the evidence-first Multi-CLI RCA cascade (`Codex gpt-6-astra xhigh` → `Claude claude-sonnet-5-5 high` [bounded `16` turns; `--opus` opt-in] → `OpenCode deepseek-v4-pro` → exit `2`):
    ```bash
    bash .agents/scripts/codex-rca.sh -a /tmp/rca-logs.txt "Περιγραφή συμπτώματος, πότε ξεκίνησε, τι αλλάξαμε"
    ```
-3. Announce clearly to the user in Greek which model & effort level is running (e.g. `"Ανάθεση RCA στο Codex (gpt-6-astra, effort xhigh)"`).
+3. Announce clearly to the user in Greek which model & effort level is running (e.g. `"Ανάθεση RCA στο Codex (gpt-6-astra, effort xhigh)"` or `"Claude Sonnet 5.5 (effort high)"`).
 4. Read `.agent-reports/codex/rca-latest.md` and **verify** every cited `path:line` before coding.
 5. Exit `2` (all external pools rate-limited/unavailable) → spawn **Gemini 4 Carbon** (`High` thinking level) or **Gemini 4 Neon** (`XHigh` thinking level) subagent with the saved `rca-*.prompt.md`.
 
@@ -30,14 +30,15 @@ Fix any `CRITICAL`/`HIGH` defects it catches before staging.
 ## C. Mandatory Pre-Commit Gate (`run-codex-review-gate.sh`)
 ```bash
 git add <explicit code paths>                       # NEVER git add -A / . / commit -a!
-bash .agents/scripts/run-codex-review-gate.sh       # Auto-tiers R1 / R2 / R3; cascades Codex -> Claude -> DeepSeek
+bash .agents/scripts/run-codex-review-gate.sh       # Auto-tiers R1 / R2 / R3; R3=Claude Opus 5.5 -> Codex -> DeepSeek; R1/R2=Codex -> Claude -> DeepSeek
 cat .agent-reports/codex/review-latest.md
 ```
-- **Automatic Tiering**:
-  - `R1` (`<60` LOC UI/test/config): `Codex gpt-6.1-terra (med)` → `Claude claude-sonnet-5-5 (med)` → Pool A fallback: `Gemini 4 Hydrogen (Medium)`.
-  - `R2` (`<350` LOC standard CRUD/backend): `Codex gpt-6.1-sol (high)` → `Claude claude-sonnet-5-5 (high)` → Pool A fallback: `Gemini 4 Neon (High)` (`gemini-4-neon-high`) / `Gemini 4 Carbon (Medium)`.
-  - `R3` (`>=350` LOC or critical concurrency, auth, crypto, security, or enforcement paths): `Codex gpt-6-astra (high)` → `Claude claude-opus-5-5 (high)` → Pool A fallback: `Gemini 4 Carbon (High)` / `Gemini 4 Neon (XHigh)` / `Gemini 4 Argon (High)`.
-- **Exit 1 (`FAIL`)**: Fix every `CRITICAL`/`HIGH` (and any `OWASP FAIL`), re-stage explicit paths, and re-run `run-codex-review-gate.sh`. On Round 2+, if Round 1 ran on Codex, it **automatically resumes** the prior Codex thread (`codex exec resume`) sending only the interdiff!
+- **Automatic Tiering & Per-Tier Cascades (`schema_version: 2026.11.6`)**:
+  - `R1` (`<60` LOC UI/test/config): `Codex gpt-6.1-terra (med)` → `Claude claude-sonnet-5-5 (med)` → `DeepSeek-V4-Pro` → Pool A fallback: `Gemini 4 Hydrogen (Medium)`.
+  - `R2` (`<350` LOC standard CRUD/backend): `Codex gpt-6.1-sol (high)` → `Claude claude-sonnet-5-5 (high)` → `DeepSeek-V4-Pro` → Pool A fallback: `Gemini 4 Neon (High)` (`gemini-4-neon-high`) / `Gemini 4 Carbon (Medium)`.
+  - `R3` (`>=350` LOC or critical concurrency, auth, crypto, security, or enforcement paths): **`Claude claude-opus-5-5 (high)` primary** (`claude-sonnet-5-5 high` fallback, bounded `16` turns) → **`Codex gpt-6-astra (high)`** → **`DeepSeek-V4-Pro`** → Pool A fallback: `Gemini 4 Carbon (High)` / `Gemini 4 Neon (XHigh)` / `Gemini 4 Argon (High)`.
+- **Rate-Limit Cooldown Cache**: Shared persistent cache in `~/.gemini/cache/pool-cooldowns.json` parses provider reset times (`60s–21600s`) so rate-limited pools are skipped automatically across `run-codex-review-gate.sh`, `codex-rca.sh`, `frontier-orchestrate.sh`, and `preflight.sh` (`⏳`). Override with `AGY_IGNORE_COOLDOWN=1`.
+- **Exit 1 (`FAIL`)**: Fix every `CRITICAL`/`HIGH` (and any `OWASP FAIL`), re-stage explicit paths, and re-run `run-codex-review-gate.sh`. On Round 2+, if Round 1 ran on Codex (`R1`/`R2` or `R3` failover), it **automatically resumes** the prior Codex thread (`codex -s read-only -C ... exec resume`) sending only the interdiff; if Round 1 ran on Claude, Round 2 embeds previous blocking findings & interdiff in the fresh prompt!
 - **Exit 2 (`SKIPPED_RATE_LIMIT` — ONLY after Codex + Claude + DeepSeek all unavailable/rate-limited)**:
   1. Spawn an internal subagent on **Gemini 4 Carbon** (`High` thinking level) — or **Gemini 4 Neon** (`High`/`XHigh`) / **Gemini 4 Argon** (`High`) matching the tier — announcing exact model + thinking level in Greek to the user.
   2. Have it review `git diff --cached -- . ':(exclude)*.md' ':(exclude).agent-state'` and return JSON conforming to `.agents/scripts/codex-review-schema.json` (including `owasp_checklist` >= 5 items).

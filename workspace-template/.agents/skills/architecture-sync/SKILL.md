@@ -91,7 +91,7 @@ Always respond to the user in Greek with a structured status table:
 |---|---|
 | 🖥️ **Λειτουργικό Σύστημα** | `Linux` / `Windows` |
 | 🔄 **Έκδοση Orchestrator (Git)** | `<old_sha> -> <new_sha>` (ή `Ήδη ενημερωμένο στο <sha>`) |
-| 🎛️ **Μητρώο Μοντέλων** | `schema_version: 2026.11.5` (`updated_at: ...`) |
+| 🎛️ **Μητρώο Μοντέλων** | `schema_version: 2026.11.6` (`updated_at: ...`) |
 | 📁 **Συγχρονισμένο Workspace** | `<τρέχον μονοπάτι workspace>` |
 | 🛡️ **Gatekeeper Daemon** | `127.0.0.1:18099` (Κατάσταση: `Healthy / Active`) |
 | ⏱️ **Χρονική Σήμανση Sync** | `<τρέχουσα ημερομηνία/ώρα>` |

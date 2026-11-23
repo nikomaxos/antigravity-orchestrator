@@ -80,9 +80,9 @@ if [ -f "$CODEX_LIB" ]; then
       fi
     fi
 
-    B_OK="✗"; codex_resolve_bin >/dev/null 2>&1 && B_OK="✓"
-    C_OK="✗"; claude_resolve_bin >/dev/null 2>&1 && C_OK="✓"
-    D_OK="free"; llm_has_deepseek_key && D_OK="✓"
+    B_OK="✗"; if codex_resolve_bin >/dev/null 2>&1; then B_OK="✓"; pool_cooldown_is_active "pool_b" >/dev/null 2>&1 && B_OK="⏳"; fi
+    C_OK="✗"; if claude_resolve_bin >/dev/null 2>&1; then C_OK="✓"; pool_cooldown_is_active "pool_c" >/dev/null 2>&1 && C_OK="⏳"; fi
+    D_OK="free"; llm_has_deepseek_key && D_OK="✓"; if pool_cooldown_is_active "pool_d" >/dev/null 2>&1 || pool_cooldown_is_active "pool_d:${OPENCODE_PRO_MODEL}" >/dev/null 2>&1; then D_OK="⏳"; fi
 
     RCA=""
     if [ -L "${CODEX_REPORT_DIR}/rca-latest.md" ] || [ -f "${CODEX_REPORT_DIR}/rca-latest.md" ]; then

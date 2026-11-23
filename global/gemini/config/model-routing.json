@@ -1,6 +1,6 @@
 {
-  "schema_version": "2026.11.5",
-  "updated_at": "2026-11-23T08:35:00Z",
+  "schema_version": "2026.11.6",
+  "updated_at": "2026-11-23T10:45:00Z",
   "fleet_sync": {
     "mode": "sse-push+daily-fallback",
     "daily_interval_seconds": 86400,
@@ -212,39 +212,52 @@
           "fallback_effort": "high"
         },
         "t4_deep": {
-          "primary": "claude-opus-5-5",
+          "primary": "claude-sonnet-5-5",
           "primary_effort": "high",
-          "fallback": "opus",
+          "fallback": "sonnet",
           "fallback_effort": "high",
-          "secondary_fallback": "claude-sonnet-5-5",
-          "secondary_fallback_effort": "high"
+          "secondary_fallback": "claude-opus-5-5",
+          "secondary_fallback_effort": "high",
+          "opus_escalation": "claude-opus-5-5",
+          "opus_escalation_effort": "high",
+          "max_turns": 16,
+          "_comment": "Unbounded open-ended T4 analysis defaults Pool C to claude-sonnet-5-5 high (prevents 3.4M cache_read Opus ERROR crashes); use --opus only when bounded escalation is needed."
         },
         "rca": {
-          "primary": "claude-opus-5-5",
+          "primary": "claude-sonnet-5-5",
           "primary_effort": "high",
-          "fallback": "opus",
+          "fallback": "sonnet",
           "fallback_effort": "high",
-          "secondary_fallback": "claude-sonnet-5-5",
-          "secondary_fallback_effort": "high"
+          "secondary_fallback": "claude-opus-5-5",
+          "secondary_fallback_effort": "high",
+          "opus_escalation": "claude-opus-5-5",
+          "opus_escalation_effort": "high",
+          "max_turns": 16,
+          "_comment": "Evidence-first bounded RCA defaults Pool C to claude-sonnet-5-5 high (--opus opt-in)."
         },
         "review": {
           "r1": {
             "primary": "claude-sonnet-5-5",
             "primary_effort": "medium",
             "fallback": "sonnet",
-            "fallback_effort": "medium"
+            "fallback_effort": "medium",
+            "max_turns": 10
           },
           "r2": {
             "primary": "claude-sonnet-5-5",
             "primary_effort": "high",
             "fallback": "sonnet",
-            "fallback_effort": "high"
+            "fallback_effort": "high",
+            "max_turns": 12
           },
           "r3": {
             "primary": "claude-opus-5-5",
             "primary_effort": "high",
             "fallback": "opus",
-            "fallback_effort": "high"
+            "fallback_effort": "high",
+            "secondary_fallback": "claude-sonnet-5-5",
+            "secondary_fallback_effort": "high",
+            "max_turns": 16
           }
         }
       }
@@ -294,23 +307,40 @@
   },
   "review_cascades": {
     "r1": {
+      "primary_pool": "pool_b",
+      "cascade": ["pool_b", "pool_c", "pool_d"],
+      "claude_max_turns": 10,
       "pool_b": {"model": "gpt-6.1-terra", "effort": "medium"},
       "pool_c": {"model": "claude-sonnet-5-5", "fallback": "sonnet", "effort": "medium"},
       "pool_d": {"model": "deepseek/deepseek-v4-pro"},
       "pool_a_fallback": {"model": "gemini-4-hydrogen-medium", "effort": "medium"}
     },
     "r2": {
+      "primary_pool": "pool_b",
+      "cascade": ["pool_b", "pool_c", "pool_d"],
+      "claude_max_turns": 12,
       "pool_b": {"model": "gpt-6.1-sol", "effort": "high"},
       "pool_c": {"model": "claude-sonnet-5-5", "fallback": "sonnet", "effort": "high"},
       "pool_d": {"model": "deepseek/deepseek-v4-pro"},
       "pool_a_fallback": {"model": "gemini-4-neon-high", "effort": "high"}
     },
     "r3": {
-      "pool_b": {"model": "gpt-6-astra", "effort": "high"},
+      "primary_pool": "pool_c",
+      "cascade": ["pool_c", "pool_b", "pool_d"],
+      "claude_max_turns": 16,
       "pool_c": {"model": "claude-opus-5-5", "fallback": "opus", "effort": "high"},
+      "pool_b": {"model": "gpt-6-astra", "effort": "high"},
       "pool_d": {"model": "deepseek/deepseek-v4-pro"},
       "pool_a_fallback": {"model": "gemini-4-carbon-high", "effort": "high"}
     }
+  },
+  "pool_cooldown": {
+    "enabled": true,
+    "default_ttl_secs": 1800,
+    "min_ttl_secs": 60,
+    "max_ttl_secs": 21600,
+    "state_file": "~/.gemini/cache/pool-cooldowns.json",
+    "_comment": "Shared persistent per-pool cooldown cache parsed from provider reset timestamps (try again at HH:MM AM/PM, retry after Ns, etc.). Respects AGY_POOL_COOLDOWN_FILE and AGY_IGNORE_COOLDOWN=1."
   },
   "rca_cascade": [
     {"pool": "pool_b", "tier_key": "rca"},

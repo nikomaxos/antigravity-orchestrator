@@ -12,7 +12,7 @@
 #   --tier backend (T3 Multi-Service/CRUD/Flyway):
 #       Pool B (Codex gpt-6.1-sol high) -> Pool C (Claude Sonnet 5.5 high) -> Pool D (DeepSeek-V4-Pro)
 #   --tier deep    (T4 Concurrency/SMPP/Hardware/Security/Architecture):
-#       Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Opus 5.5 high) -> Pool D (DeepSeek-V4-Pro)
+#       Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in) -> Pool D (DeepSeek-V4-Pro)
 #   --tier flash   (T1 Log/Repo Scan):
 #       Pool D (DeepSeek-Flash -> DeepSeek-V4-Pro) -> Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna low)
 #
@@ -33,19 +33,21 @@ source "${SCRIPT_DIR}/codex-lib.sh"
 TIER="backend"
 PROMPT_TEXT=""
 ATTACH_FILES=()
-COOLDOWN_SECS="${FRONTIER_COOLDOWN_SECS:-900}"
+COOLDOWN_SECS="${FRONTIER_COOLDOWN_SECS:-1800}"
+DEEP_USE_OPUS=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  bash .agents/scripts/frontier-orchestrate.sh --tier <ui|backend|deep|flash> [--prompt "<task>"] [--file <path>]...
+  bash .agents/scripts/frontier-orchestrate.sh --tier <ui|backend|deep|flash> [--opus] [--prompt "<task>"] [--file <path>]...
 
 Options:
   --tier <ui|backend|deep|flash>  Task tier routing cascade (default: backend):
                                     - ui      (T2): Pool C (Claude Sonnet 5.5) -> Pool B (Codex gpt-6.1-terra medium) -> Pool D (DeepSeek-V4-Pro)
                                     - backend (T3): Pool B (Codex gpt-6.1-sol high) -> Pool C (Claude Sonnet 5.5) -> Pool D (DeepSeek-V4-Pro)
-                                    - deep    (T4): Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Opus 5.5 high) -> Pool D (DeepSeek-V4-Pro)
+                                    - deep    (T4): Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in) -> Pool D (DeepSeek-V4-Pro)
                                     - flash   (T1): Pool D (DeepSeek-Flash / DeepSeek-V4-Pro) -> Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna low)
+  --opus                          Opt into Claude Opus 5.5 on Pool C for bounded --tier deep tasks
   -p, --prompt "<text>"           Task prompt (can also be passed as positional args or via stdin)
   -f, -a, --file <path>           Attach repo-local file content into the prompt context (repeatable)
   -h, --help                      Show this help message and exit 0
@@ -89,6 +91,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] && [ -n "${2:-}" ] || { echo "ERROR: $1 requires a file path" >&2; exit 1; }
       validate_attach_file "$2"
       shift 2
+      ;;
+    --opus)
+      DEEP_USE_OPUS=1
+      shift
       ;;
     -h|--help|help)
       usage
@@ -167,22 +173,23 @@ EOF
       echo ""
       echo "### File: \`${af#"$CODEX_REPO_ROOT"/}\`"
       echo '```'
-      head -c "$CODEX_MAX_ATTACH_BYTES" "$af"
+      codex_attach_file "$af" "$CODEX_MAX_ATTACH_BYTES"
       echo ""
       echo '```'
     done
   fi
 } > "$PROMPT_FILE"
 
-# Delegate cooldown check to shared codex_pool_in_cooldown in codex-lib.sh
+# Delegate cooldown check to shared pool_cooldown_is_active in codex-lib.sh
 pool_in_cooldown() {
-  codex_pool_in_cooldown "$1" "${COOLDOWN_SECS:-900}"
+  pool_cooldown_is_active "$1"
 }
 
 try_pool_b_codex() {
-  local model="$1" effort="$2" label="$3"
-  if pool_in_cooldown "codex:${model}"; then
-    echo "⏭️  [Frontier Orchestrator] Skipping Pool B (${label}) — in cooldown from recent RATE_LIMITED/UNAVAILABLE." >&2
+  local model="$1" effort="$2" label="$3" cd_info=""
+  cd_info=$(pool_in_cooldown "pool_b:${model}" || true)
+  if [ -n "$cd_info" ]; then
+    echo "⏭️  [Frontier Orchestrator] Skipping Pool B (${label}) — in cooldown (${cd_info})." >&2
     CODEX_RUN_STATUS="COOLDOWN"
     return 1
   fi
@@ -197,9 +204,10 @@ try_pool_b_codex() {
 }
 
 try_pool_c_claude() {
-  local model="$1" effort="$2" label="$3"
-  if pool_in_cooldown "claude:${model}"; then
-    echo "⏭️  [Frontier Orchestrator] Skipping Pool C (${label}) — in cooldown from recent RATE_LIMITED/UNAVAILABLE." >&2
+  local model="$1" effort="$2" label="$3" cd_info=""
+  cd_info=$(pool_in_cooldown "pool_c:${model}" || true)
+  if [ -n "$cd_info" ]; then
+    echo "⏭️  [Frontier Orchestrator] Skipping Pool C (${label}) — in cooldown (${cd_info})." >&2
     CODEX_RUN_STATUS="COOLDOWN"
     return 1
   fi
@@ -214,7 +222,13 @@ try_pool_c_claude() {
 }
 
 try_pool_d_deepseek() {
-  local model="$1" req_paid="$2" label="$3"
+  local model="$1" req_paid="$2" label="$3" cd_info=""
+  cd_info=$(pool_in_cooldown "pool_d:${model}" || true)
+  if [ -n "$cd_info" ]; then
+    echo "⏭️  [Frontier Orchestrator] Skipping Pool D (${label}) — in cooldown (${cd_info})." >&2
+    CODEX_RUN_STATUS="COOLDOWN"
+    return 1
+  fi
   echo ">>> [Frontier Orchestrator] Tier=${TIER} | Trying Pool D: OpenCode DeepSeek (${label}, model=${model}, agent=readonly-auditor)..." >&2
   opencode_run "frontier-${TIER}" "$model" "" "$OUT_FILE" "$PROMPT_FILE" "$req_paid"
   if [ "$CODEX_RUN_STATUS" = "OK" ] && [ -s "$OUT_FILE" ]; then
@@ -244,7 +258,8 @@ TIER_BACKEND_C_EFFORT="high"
 TIER_DEEP_B_MODEL="gpt-6-astra"
 TIER_DEEP_B_FALLBACK="gpt-6.1-sol"
 TIER_DEEP_B_EFFORT="xhigh"
-TIER_DEEP_C_MODEL="claude-opus-5-5"
+TIER_DEEP_C_MODEL="claude-sonnet-5-5"
+TIER_DEEP_C_OPUS="claude-opus-5-5"
 TIER_DEEP_C_FALLBACK="claude-sonnet-5-5"
 TIER_DEEP_C_FALLBACK_EFFORT="high"
 TIER_DEEP_C_EFFORT="high"
@@ -271,9 +286,8 @@ if [ -f "$CFG_FILE" ] && command -v jq >/dev/null 2>&1; then
   TIER_DEEP_B_MODEL=$(jq -r '.pools.pool_b.models.t4_deep.primary // "gpt-6-astra"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_B_MODEL")
   TIER_DEEP_B_FALLBACK=$(jq -r '.pools.pool_b.models.t4_deep.fallback // "gpt-6.1-sol"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_B_FALLBACK")
   TIER_DEEP_B_EFFORT=$(jq -r '.pools.pool_b.models.t4_deep.primary_effort // "xhigh"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_B_EFFORT")
-  TIER_DEEP_C_MODEL=$(jq -r '.pools.pool_c.models.t4_deep.primary // "claude-opus-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_C_MODEL")
-  TIER_DEEP_C_FALLBACK=$(jq -r '.pools.pool_c.models.t4_deep.secondary_fallback // .pools.pool_c.models.t4_deep.fallback // "claude-sonnet-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_C_FALLBACK")
-  TIER_DEEP_C_FALLBACK_EFFORT=$(jq -r '.pools.pool_c.models.t4_deep.secondary_fallback_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "high")
+  TIER_DEEP_C_MODEL=$(jq -r '.pools.pool_c.models.t4_deep.primary // "claude-sonnet-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_C_MODEL")
+  TIER_DEEP_C_OPUS=$(jq -r '.pools.pool_c.models.t4_deep.opus_escalation // "claude-opus-5-5"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_C_OPUS")
   TIER_DEEP_C_EFFORT=$(jq -r '.pools.pool_c.models.t4_deep.primary_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "$TIER_DEEP_C_EFFORT")
 
   TIER_FLASH_B_MODEL=$(jq -r '.pools.pool_b.models.t1_reserve.primary // "gpt-6-luna"' "$CFG_FILE" 2>/dev/null || echo "$TIER_FLASH_B_MODEL")
@@ -311,14 +325,14 @@ case "$TIER" in
     fi
     ;;
   deep)
-    # Cascade: Pool B (Codex gpt-6-astra / sol) -> Pool C (Claude Opus 5.5 / sonnet) -> Pool D (DeepSeek-V4-Pro)
+    # Cascade: Pool B (Codex gpt-6-astra / sol) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in) -> Pool D (DeepSeek-V4-Pro)
     if try_pool_b_codex "$TIER_DEEP_B_MODEL" "$TIER_DEEP_B_EFFORT" "Codex ${TIER_DEEP_B_MODEL} (${TIER_DEEP_B_EFFORT})"; then
       SUCCEEDED=1
     elif [ -n "$TIER_DEEP_B_FALLBACK" ] && try_pool_b_codex "$TIER_DEEP_B_FALLBACK" "$TIER_DEEP_B_EFFORT" "Codex ${TIER_DEEP_B_FALLBACK} (${TIER_DEEP_B_EFFORT})"; then
       SUCCEEDED=1
-    elif try_pool_c_claude "$TIER_DEEP_C_MODEL" "$TIER_DEEP_C_EFFORT" "Claude ${TIER_DEEP_C_MODEL} (${TIER_DEEP_C_EFFORT})"; then
+    elif [ "$DEEP_USE_OPUS" -eq 1 ] && try_pool_c_claude "$TIER_DEEP_C_OPUS" "$TIER_DEEP_C_EFFORT" "Claude ${TIER_DEEP_C_OPUS} (${TIER_DEEP_C_EFFORT})"; then
       SUCCEEDED=1
-    elif [ -n "$TIER_DEEP_C_FALLBACK" ] && try_pool_c_claude "$TIER_DEEP_C_FALLBACK" "$TIER_DEEP_C_FALLBACK_EFFORT" "Claude ${TIER_DEEP_C_FALLBACK} (${TIER_DEEP_C_FALLBACK_EFFORT})"; then
+    elif try_pool_c_claude "$TIER_DEEP_C_MODEL" "$TIER_DEEP_C_EFFORT" "Claude ${TIER_DEEP_C_MODEL} (${TIER_DEEP_C_EFFORT})"; then
       SUCCEEDED=1
     elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
       SUCCEEDED=1

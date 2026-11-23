@@ -264,19 +264,23 @@ if [ "$cmd" = "run" ]; then
     -o "$OUT_FILE" \
     - < "$TMP_PROMPT" > "$EVENTS_FILE" 2> "$STDERR_FILE" || rc=$?
 else
-  (
-    cd "$CODEX_WORKDIR"
-    timeout "$CODEX_TIMEOUT_SECS" "$BIN" exec resume "$SESSION_TARGET" \
-      "${SANDBOX_ARGS[@]}" \
-      -m "$CODEX_MODEL" \
-      -c "model_reasoning_effort=\"${CODEX_EFFORT}\"" \
-      -c "features.multi_agent=${CODEX_MULTI_AGENT}" \
-      -c 'approval_policy="never"' \
-      --skip-git-repo-check \
-      --json \
-      -o "$OUT_FILE" \
-      - < "$TMP_PROMPT" > "$EVENTS_FILE" 2> "$STDERR_FILE"
-  ) || rc=$?
+  # Top-level -s / -C flags MUST precede `exec` because `codex exec resume` rejects `-s` after `resume`.
+  PRE_EXEC_ARGS=(-C "$CODEX_WORKDIR")
+  RESUME_SANDBOX_CFG='sandbox_mode="workspace-write"'
+  if [ "$SINGLE_WRITER_PROTECTED" -eq 1 ]; then
+    PRE_EXEC_ARGS=(-s read-only -C "$CODEX_WORKDIR")
+    RESUME_SANDBOX_CFG='sandbox_mode="read-only"'
+  fi
+  timeout "$CODEX_TIMEOUT_SECS" "$BIN" "${PRE_EXEC_ARGS[@]}" exec resume "$SESSION_TARGET" \
+    -m "$CODEX_MODEL" \
+    -c "$RESUME_SANDBOX_CFG" \
+    -c "model_reasoning_effort=\"${CODEX_EFFORT}\"" \
+    -c "features.multi_agent=${CODEX_MULTI_AGENT}" \
+    -c 'approval_policy="never"' \
+    --skip-git-repo-check \
+    --json \
+    -o "$OUT_FILE" \
+    - < "$TMP_PROMPT" > "$EVENTS_FILE" 2> "$STDERR_FILE" || rc=$?
 fi
 
 SESSION_ID=$(jq -r -R 'fromjson? | select(.type=="thread.started") | .thread_id // empty' "$EVENTS_FILE" 2>/dev/null | head -1 || true)

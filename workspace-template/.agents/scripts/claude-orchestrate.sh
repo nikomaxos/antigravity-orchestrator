@@ -6,7 +6,8 @@ TIER="backend"
 MODEL=""
 EFFORT=""
 WORKDIR="${PWD}"
-MAX_TURNS=25
+MAX_TURNS=""
+USE_OPUS=0
 
 if [[ "${1:-}" == "run" ]]; then
   shift
@@ -20,6 +21,7 @@ while [ $# -gt 0 ]; do
     -e|--effort) EFFORT="$2"; shift 2 ;;
     -C|--cd|--workdir) WORKDIR="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
+    --opus) USE_OPUS=1; shift ;;
     --) shift; while [ $# -gt 0 ]; do POSITIONAL+=("$1"); shift; done ;;
     *) POSITIONAL+=("$1"); shift ;;
   esac
@@ -34,20 +36,27 @@ if [ -f "$CFG_FILE" ] && command -v jq >/dev/null 2>&1; then
   DEFAULT_UI_EFFORT=$(jq -r '.pools.pool_c.models.t2_ui.primary_effort // "medium"' "$CFG_FILE" 2>/dev/null || echo "medium")
   DEFAULT_BACKEND_MODEL=$(jq -r '.pools.pool_c.models.t3_backend.primary // "claude-sonnet-5-5"' "$CFG_FILE" 2>/dev/null || echo "claude-sonnet-5-5")
   DEFAULT_BACKEND_EFFORT=$(jq -r '.pools.pool_c.models.t3_backend.primary_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "high")
-  DEFAULT_DEEP_MODEL=$(jq -r '.pools.pool_c.models.t4_deep.primary // "claude-opus-5-5"' "$CFG_FILE" 2>/dev/null || echo "claude-opus-5-5")
+  DEFAULT_DEEP_MODEL=$(jq -r '.pools.pool_c.models.t4_deep.primary // "claude-sonnet-5-5"' "$CFG_FILE" 2>/dev/null || echo "claude-sonnet-5-5")
+  DEFAULT_DEEP_OPUS=$(jq -r '.pools.pool_c.models.t4_deep.opus_escalation // "claude-opus-5-5"' "$CFG_FILE" 2>/dev/null || echo "claude-opus-5-5")
   DEFAULT_DEEP_EFFORT=$(jq -r '.pools.pool_c.models.t4_deep.primary_effort // "high"' "$CFG_FILE" 2>/dev/null || echo "high")
+  DEFAULT_DEEP_TURNS=$(jq -r '.pools.pool_c.models.t4_deep.max_turns // 16' "$CFG_FILE" 2>/dev/null || echo "16")
 else
   DEFAULT_T1_MODEL="claude-sonnet-5-5"; DEFAULT_T1_EFFORT="low"
   DEFAULT_UI_MODEL="claude-sonnet-5-5"; DEFAULT_UI_EFFORT="medium"
   DEFAULT_BACKEND_MODEL="claude-sonnet-5-5"; DEFAULT_BACKEND_EFFORT="high"
-  DEFAULT_DEEP_MODEL="claude-opus-5-5"; DEFAULT_DEEP_EFFORT="high"
+  DEFAULT_DEEP_MODEL="claude-sonnet-5-5"; DEFAULT_DEEP_OPUS="claude-opus-5-5"; DEFAULT_DEEP_EFFORT="high"; DEFAULT_DEEP_TURNS=16
 fi
 
 case "$TIER" in
-  fast|t1)    : "${MODEL:=$DEFAULT_T1_MODEL}";  : "${EFFORT:=$DEFAULT_T1_EFFORT}" ;;
-  ui|t2)      : "${MODEL:=$DEFAULT_UI_MODEL}"; : "${EFFORT:=$DEFAULT_UI_EFFORT}" ;;
-  backend|t3) : "${MODEL:=$DEFAULT_BACKEND_MODEL}"; : "${EFFORT:=$DEFAULT_BACKEND_EFFORT}" ;;
-  deep|t4)    : "${MODEL:=$DEFAULT_DEEP_MODEL}";   : "${EFFORT:=$DEFAULT_DEEP_EFFORT}" ;;
+  fast|t1)
+    : "${MODEL:=$DEFAULT_T1_MODEL}";  : "${EFFORT:=$DEFAULT_T1_EFFORT}"; : "${MAX_TURNS:=12}" ;;
+  ui|t2)
+    : "${MODEL:=$DEFAULT_UI_MODEL}"; : "${EFFORT:=$DEFAULT_UI_EFFORT}"; : "${MAX_TURNS:=12}" ;;
+  backend|t3)
+    : "${MODEL:=$DEFAULT_BACKEND_MODEL}"; : "${EFFORT:=$DEFAULT_BACKEND_EFFORT}"; : "${MAX_TURNS:=20}" ;;
+  deep|t4)
+    [ "$USE_OPUS" -eq 1 ] && [ -z "$MODEL" ] && MODEL="$DEFAULT_DEEP_OPUS"
+    : "${MODEL:=$DEFAULT_DEEP_MODEL}"; : "${EFFORT:=$DEFAULT_DEEP_EFFORT}"; : "${MAX_TURNS:=$DEFAULT_DEEP_TURNS}" ;;
   *) echo "Invalid --tier: $TIER" >&2; exit 1 ;;
 esac
 
