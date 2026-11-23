@@ -21,13 +21,22 @@ const crypto = require('crypto');
 const { execFileSync, execFile } = require('child_process');
 
 const HOST = process.env.AGY_FLEET_HOST || '0.0.0.0';
-const PORT = Number(process.env.AGY_FLEET_PORT || 18100);
+const PORT = process.env.AGY_FLEET_PORT !== undefined ? Number(process.env.AGY_FLEET_PORT) : 18100;
 const USER_HOME = process.env.HOME || os.homedir() || '/home/nick';
 const CONFIG_DIR = process.env.AGY_FLEET_CONFIG_DIR || path.join(USER_HOME, '.config', 'agy-fleet');
 const DATA_DIR = process.env.AGY_FLEET_DATA_DIR || path.join(USER_HOME, '.local', 'share', 'agy-fleet');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'hub-config.json');
 const NODES_FILE = path.join(DATA_DIR, 'nodes.json');
 const ADMIN_VERIFY_URL = process.env.AGY_FLEET_ADMIN_VERIFY_URL || 'http://127.0.0.1:8081/api/users/me';
+const ABOUT_VERIFY_URL = process.env.AGY_ABOUT_URL || 'http://127.0.0.1:8081/api/system/about';
+const ABOUT_CACHE_TTL_MS = Number(process.env.AGY_ABOUT_CACHE_MS ?? 15000);
+const WORKSPACE_DIR = path.resolve(process.env.AGY_WORKSPACE_DIR || path.join(USER_HOME, 'Development', 'messaging-agent'));
+const GEMINI_CONFIG_DIR = path.join(USER_HOME, '.gemini', 'config');
+const BOTS_CONFIG_FILE = process.env.AGY_BOTS_CONFIG_FILE || path.join(GEMINI_CONFIG_DIR, 'offload-bots.json');
+const BOTS_RUNS_FILE = process.env.AGY_BOTS_RUNS_FILE || path.join(DATA_DIR, 'bot-runs.json');
+const LOCAL_ROUTING_FILE = process.env.AGY_LOCAL_ROUTING_FILE || path.join(GEMINI_CONFIG_DIR, 'model-routing.local.json');
+const COOLDOWNS_FILE = process.env.AGY_COOLDOWNS_FILE || path.join(USER_HOME, '.gemini', 'cache', 'pool-cooldowns.json');
+const GEMINI_QUOTA_FILE = process.env.AGY_GEMINI_QUOTA_FILE || path.join(GEMINI_CONFIG_DIR, 'gemini-quota.json');
 const STARTED_AT = Date.now();
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const HEARTBEAT_MS = 25000;
@@ -332,7 +341,7 @@ function isFleetAuthorized(req, urlObj) {
 function verifyAdminJwt(req) {
   return new Promise((resolve) => {
     const token = extractBearer(req);
-    if (!token) return resolve({ ok: false, reason: 'Missing Authorization Bearer JWT' });
+    if (!token) return resolve({ ok: false, status: 401, reason: 'Missing Authorization Bearer JWT' });
 
     try {
       const target = new URL(ADMIN_VERIFY_URL);
@@ -356,33 +365,649 @@ function verifyAdminJwt(req) {
           });
           res.on('end', () => {
             if (res.statusCode !== 200) {
-              return resolve({ ok: false, reason: `Upstream auth HTTP ${res.statusCode}` });
+              return resolve({ ok: false, status: 401, reason: `Upstream auth HTTP ${res.statusCode}` });
             }
             try {
               const user = JSON.parse(raw);
               const role = String(user.role || '').toUpperCase();
               if (role === 'SUPER_ADMIN' || role === 'ADMIN') {
-                return resolve({ ok: true, user });
+                return resolve({ ok: true, user, token });
               }
-              return resolve({ ok: false, reason: `Insufficient role: ${role}` });
+              return resolve({ ok: false, status: 403, reason: `Insufficient role: ${role}` });
             } catch {
-              return resolve({ ok: false, reason: 'Invalid auth response JSON' });
+              return resolve({ ok: false, status: 401, reason: 'Invalid auth response JSON' });
             }
           });
         }
       );
       upstream.on('timeout', () => {
         upstream.destroy();
-        resolve({ ok: false, reason: 'Upstream auth timeout' });
+        resolve({ ok: false, status: 401, reason: 'Upstream auth timeout' });
       });
       upstream.on('error', (err) => {
-        resolve({ ok: false, reason: err.message });
+        resolve({ ok: false, status: 401, reason: err.message });
+      });
+      upstream.end();
+    } catch (err) {
+      resolve({ ok: false, status: 401, reason: err.message });
+    }
+  });
+}
+
+// =============================================================================
+// Pool 0 Deterministic Linux Offload Bots & Local Quota Config (Staging Only)
+// =============================================================================
+const BOT_ALLOWED_SERVICES = [
+  'admin-panel',
+  'platform-docs',
+  'core-service',
+  'routing-engine',
+  'billing-service',
+  'pricing-service',
+  'smpp-clients-server',
+  'smpp-gateway',
+  'rcs-mautrix',
+  'ai-service',
+  'security-service',
+  'device-gateway',
+  'deploy-agent',
+];
+
+const BOT_CATALOG = {
+  'ops-preflight': {
+    botId: 'ops-preflight',
+    label: 'Ops Preflight Telemetry',
+    description: '100% read-only Staging health, Gatekeeper, quota meter, cooldown cache & aggregate modem/SMSC count check (0 LLM tokens).',
+    script: 'ops-preflight.mjs',
+    modes: ['readonly'],
+    defaultMode: 'readonly',
+    mutatingModes: [],
+    estimatedTokensSaved: 18000,
+  },
+  'staging-deploy-verify': {
+    botId: 'staging-deploy-verify',
+    label: 'Staging Deploy & Verify',
+    description: 'Inspects pending changed modules, verifies container health, HTTP routes & contextual help coverage (verify), or deploys allowlisted services via deploy-staging.sh.',
+    script: 'staging-deploy-verify.mjs',
+    modes: ['verify', 'deploy'],
+    defaultMode: 'verify',
+    mutatingModes: ['deploy'],
+    estimatedTokensSaved: 25000,
+  },
+  'release-pack-sync': {
+    botId: 'release-pack-sync',
+    label: 'Release Pack & Fleet Sync',
+    description: 'Verifies 4-mirror model-routing byte equality, orchestrator tarball freshness & signed gates (audit), or rebuilds bundle & pushes SSE sync cleanly.',
+    script: 'release-pack-sync.mjs',
+    modes: ['audit', 'sync'],
+    defaultMode: 'audit',
+    mutatingModes: ['sync'],
+    estimatedTokensSaved: 15000,
+  },
+};
+
+const VALID_BOT_SCHEDULES = new Set(['manual', 'hourly', 'daily']);
+const LOCAL_ROUTING_ALLOWLIST = new Set([
+  'ctx_hard_limit_tokens',
+  'ctx_warn_tokens',
+  'warn_threshold_pct',
+  'reinject_minutes',
+]);
+
+const runningBots = new Map();
+let cachedAboutStaging = { confirmedAt: 0, environment: null };
+
+function scrubSensitiveOutput(text) {
+  let out = String(text || '');
+  out = out.replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer <REDACTED>');
+  out = out.replace(/(fleetToken|webhookSecret|password|secret|apiKey|token)\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{8,}["']?/gi, '$1=<REDACTED>');
+  return out;
+}
+
+function readJsonSafeNoSymlink(filePath) {
+  try {
+    const st = fs.lstatSync(filePath);
+    if (st.isSymbolicLink()) return { ok: false, error: 'symlink_rejected', data: null };
+    if (!st.isFile()) return { ok: false, error: 'not_a_file', data: null };
+    const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+    return { ok: true, error: null, data: JSON.parse(raw) };
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { ok: false, error: 'missing', data: null };
+    return { ok: false, error: err?.message || 'read_error', data: null };
+  }
+}
+
+function writePrivateJsonSafe(filePath, data) {
+  const dir = path.dirname(filePath);
+  ensureDir(dir, 0o700);
+  try {
+    const st = fs.lstatSync(filePath);
+    if (st.isSymbolicLink()) {
+      throw new Error(`Refusing to write to symlink target: ${path.basename(filePath)}`);
+    }
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') throw err;
+  }
+  const tmpPath = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+  fs.renameSync(tmpPath, filePath);
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {}
+}
+
+function defaultOffloadBotsConfig() {
+  return {
+    schemaVersion: hubState.schemaVersion || '2026.11.6',
+    environment: 'STAGING',
+    updatedAt: null,
+    updatedBy: 'default',
+    retention: { maxRunsPerBot: 25 },
+    bots: {
+      'ops-preflight': {
+        enabled: true,
+        schedule: 'manual',
+        timeoutSec: 45,
+        maxLogLines: 80,
+        includeBackendSummary: true,
+        includeCooldowns: true,
+        includeQuotaMeter: true,
+      },
+      'staging-deploy-verify': {
+        enabled: true,
+        schedule: 'manual',
+        timeoutSec: 300,
+        maxLogLines: 80,
+        autoVerifyHelp: true,
+        allowedServices: [...BOT_ALLOWED_SERVICES],
+      },
+      'release-pack-sync': {
+        enabled: true,
+        schedule: 'manual',
+        timeoutSec: 120,
+        maxLogLines: 80,
+        strictCleanWorktree: true,
+        allowBundleRebuild: true,
+        allowFleetBroadcast: true,
+      },
+    },
+  };
+}
+
+function loadOffloadBotsConfig() {
+  const def = defaultOffloadBotsConfig();
+  const res = readJsonSafeNoSymlink(BOTS_CONFIG_FILE);
+  if (!res.ok || !res.data || typeof res.data !== 'object') return def;
+  const srcBots = res.data.bots && typeof res.data.bots === 'object' ? res.data.bots : {};
+  return {
+    ...def,
+    ...res.data,
+    retention: { ...def.retention, ...(res.data.retention || {}) },
+    bots: {
+      'ops-preflight': { ...def.bots['ops-preflight'], ...(srcBots['ops-preflight'] || {}) },
+      'staging-deploy-verify': { ...def.bots['staging-deploy-verify'], ...(srcBots['staging-deploy-verify'] || {}) },
+      'release-pack-sync': { ...def.bots['release-pack-sync'], ...(srcBots['release-pack-sync'] || {}) },
+    },
+  };
+}
+
+function loadBotRuns() {
+  const res = readJsonSafeNoSymlink(BOTS_RUNS_FILE);
+  if (res.ok && Array.isArray(res.data)) return res.data;
+  return [];
+}
+
+function appendBotRunRecord(run, maxRunsPerBot = 25) {
+  const existing = loadBotRuns();
+  const next = [run, ...existing];
+  const counts = {};
+  const pruned = [];
+  for (const item of next) {
+    if (!item || !item.botId) continue;
+    counts[item.botId] = (counts[item.botId] || 0) + 1;
+    if (counts[item.botId] <= maxRunsPerBot) {
+      pruned.push(item);
+    }
+  }
+  writePrivateJsonSafe(BOTS_RUNS_FILE, pruned.slice(0, 150));
+}
+
+function extractRequestHosts(req) {
+  const hosts = [];
+  for (const raw of [req.headers['x-forwarded-host'], req.headers.host]) {
+    if (!raw || typeof raw !== 'string') continue;
+    for (const part of raw.split(',')) {
+      const clean = part.trim().toLowerCase().replace(/:\d+$/, '');
+      if (clean) hosts.push(clean);
+    }
+  }
+  return hosts;
+}
+
+function verifyStagingAbout(bearerToken) {
+  const now = Date.now();
+  if (ABOUT_CACHE_TTL_MS > 0 && cachedAboutStaging.environment === 'STAGING' && now - cachedAboutStaging.confirmedAt < ABOUT_CACHE_TTL_MS) {
+    return Promise.resolve({ ok: true, environment: 'STAGING' });
+  }
+  return new Promise((resolve) => {
+    try {
+      const target = new URL(ABOUT_VERIFY_URL);
+      const client = target.protocol === 'https:' ? require('https') : http;
+      const headers = { Accept: 'application/json' };
+      if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
+      const upstream = client.request(
+        {
+          hostname: target.hostname,
+          port: target.port || (target.protocol === 'https:' ? 443 : 80),
+          path: target.pathname + target.search,
+          method: 'GET',
+          headers,
+          timeout: 4000,
+        },
+        (res) => {
+          let raw = '';
+          res.on('data', (chunk) => {
+            if (raw.length < 32768) raw += chunk.toString('utf8');
+          });
+          res.on('end', () => {
+            if (res.statusCode !== 200) {
+              return resolve({ ok: false, reason: `Staging verification HTTP ${res.statusCode}` });
+            }
+            try {
+              const parsed = JSON.parse(raw);
+              const env = String(parsed.environment || '').toUpperCase();
+              if (env === 'STAGING') {
+                cachedAboutStaging = { confirmedAt: Date.now(), environment: 'STAGING' };
+                return resolve({ ok: true, environment: 'STAGING' });
+              }
+              cachedAboutStaging = { confirmedAt: 0, environment: env || null };
+              return resolve({ ok: false, reason: `Non-staging environment detected: ${env || 'UNKNOWN'}` });
+            } catch {
+              return resolve({ ok: false, reason: 'Invalid system/about JSON response' });
+            }
+          });
+        }
+      );
+      upstream.on('timeout', () => {
+        upstream.destroy();
+        resolve({ ok: false, reason: 'Staging verification timeout' });
+      });
+      upstream.on('error', (err) => {
+        resolve({ ok: false, reason: `Staging verification unreachable: ${err.message}` });
       });
       upstream.end();
     } catch (err) {
       resolve({ ok: false, reason: err.message });
     }
   });
+}
+
+async function requireStagingAdmin(req) {
+  const runtimeEnv = String(process.env.AGY_FLEET_ENV || 'staging').trim().toLowerCase();
+  if (runtimeEnv === 'production') {
+    return { ok: false, status: 403, reason: 'Offload Bots and local routing controls are disabled in Production.' };
+  }
+  const hosts = extractRequestHosts(req);
+  if (hosts.includes('messaging-agent.globalnetservices.net')) {
+    return { ok: false, status: 403, reason: 'Offload Bots and local routing controls are disabled on Production hostname.' };
+  }
+  const adminAuth = await verifyAdminJwt(req);
+  if (!adminAuth.ok) {
+    return { ok: false, status: adminAuth.status || 401, reason: adminAuth.reason || 'Unauthorized' };
+  }
+  const stageRes = await verifyStagingAbout(adminAuth.token);
+  if (!stageRes.ok) {
+    return { ok: false, status: 403, reason: stageRes.reason || 'Staging verification failed' };
+  }
+  return { ok: true, user: adminAuth.user, token: adminAuth.token, environment: 'STAGING' };
+}
+
+function readFleetAndLocalRouting() {
+  let fleetRouting = {};
+  const fleetRoutingPath = path.join(hubConfig.repoDir, 'global', 'gemini', 'config', 'model-routing.json');
+  const fleetRes = readJsonSafeNoSymlink(fleetRoutingPath);
+  if (fleetRes.ok && fleetRes.data?.gemini_quota_guard) {
+    fleetRouting = fleetRes.data.gemini_quota_guard;
+  }
+  const localRes = readJsonSafeNoSymlink(LOCAL_ROUTING_FILE);
+  const localGuard =
+    localRes.ok && localRes.data?.gemini_quota_guard && typeof localRes.data.gemini_quota_guard === 'object'
+      ? localRes.data.gemini_quota_guard
+      : {};
+  const fleetDefaults = {
+    ctx_hard_limit_tokens: Number(fleetRouting.ctx_hard_limit_tokens ?? 200000),
+    ctx_warn_tokens: Number(fleetRouting.ctx_warn_tokens ?? 150000),
+    warn_threshold_pct: Number(fleetRouting.warn_threshold_pct ?? 30),
+    reinject_minutes: Number(fleetRouting.reinject_minutes ?? 15),
+    reserve_threshold_pct: Number(fleetRouting.reserve_threshold_pct ?? 10),
+    restore_threshold_pct: Number(fleetRouting.restore_threshold_pct ?? 25),
+    auto: fleetRouting.auto !== false,
+  };
+  const effective = {
+    ctx_hard_limit_tokens: Number(localGuard.ctx_hard_limit_tokens ?? fleetDefaults.ctx_hard_limit_tokens),
+    ctx_warn_tokens: Number(localGuard.ctx_warn_tokens ?? fleetDefaults.ctx_warn_tokens),
+    warn_threshold_pct: Number(localGuard.warn_threshold_pct ?? fleetDefaults.warn_threshold_pct),
+    reinject_minutes: Number(localGuard.reinject_minutes ?? fleetDefaults.reinject_minutes),
+    reserve_threshold_pct: fleetDefaults.reserve_threshold_pct,
+    restore_threshold_pct: fleetDefaults.restore_threshold_pct,
+    auto: fleetDefaults.auto,
+  };
+  return {
+    fleetDefaults,
+    localOverride: {
+      exists: Boolean(localRes.ok),
+      error: localRes.ok || localRes.error === 'missing' ? null : localRes.error,
+      values: {
+        ctx_hard_limit_tokens: localGuard.ctx_hard_limit_tokens ?? null,
+        ctx_warn_tokens: localGuard.ctx_warn_tokens ?? null,
+        warn_threshold_pct: localGuard.warn_threshold_pct ?? null,
+        reinject_minutes: localGuard.reinject_minutes ?? null,
+      },
+    },
+    effective,
+    allowlistedFields: Array.from(LOCAL_ROUTING_ALLOWLIST),
+  };
+}
+
+function readPoolCooldownsSummary() {
+  const res = readJsonSafeNoSymlink(COOLDOWNS_FILE);
+  if (!res.ok) {
+    return {
+      ok: res.error === 'missing',
+      error: res.error === 'missing' ? null : res.error,
+      entries: [],
+    };
+  }
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const raw = res.data && typeof res.data === 'object' && !Array.isArray(res.data) ? res.data : {};
+  const entries = Object.entries(raw).map(([key, val]) => {
+    const untilEpoch = Number(val?.until_epoch || 0);
+    const remainingSec = Math.max(0, untilEpoch - nowEpoch);
+    return {
+      key,
+      pool: String(val?.pool || key.split(':')[0] || ''),
+      model: String(val?.model || key.split(':').slice(1).join(':') || ''),
+      reason: String(val?.reason || ''),
+      untilEpoch,
+      untilIso: untilEpoch > 0 ? new Date(untilEpoch * 1000).toISOString() : null,
+      remainingSec,
+      active: untilEpoch > nowEpoch,
+    };
+  });
+  return { ok: true, error: null, entries };
+}
+
+function readQuotaSummary() {
+  const qRes = readJsonSafeNoSymlink(GEMINI_QUOTA_FILE);
+  if (!qRes.ok || !qRes.data) {
+    return {
+      remainingPct: null,
+      reserveMode: false,
+      source: 'unknown',
+      updatedAt: null,
+    };
+  }
+  return {
+    remainingPct: qRes.data.meter?.five_hour_remaining_pct ?? qRes.data.gemini_remaining_pct ?? null,
+    reserveMode: Boolean(qRes.data.reserve_passthrough_mode),
+    source: qRes.data.source || 'auto-meter',
+    updatedAt: qRes.data.updated_at || null,
+  };
+}
+
+function buildBotsStatePayload() {
+  readRepoHeadAndSchema();
+  const config = loadOffloadBotsConfig();
+  const runs = loadBotRuns();
+  const activeRuns = Array.from(runningBots.values()).map((r) => ({
+    botId: r.botId,
+    mode: r.mode,
+    startedAt: r.startedAt,
+    triggeredBy: r.triggeredBy,
+  }));
+  const botsCatalog = Object.values(BOT_CATALOG).map((item) => ({
+    ...item,
+    scriptPath: `.agents/scripts/bots/${item.script}`,
+  }));
+  return {
+    ok: true,
+    environment: 'STAGING',
+    botsConfigFile: BOTS_CONFIG_FILE,
+    localRoutingFile: LOCAL_ROUTING_FILE,
+    cooldownsFile: COOLDOWNS_FILE,
+    config,
+    botsCatalog,
+    runningBots: activeRuns,
+    recentRuns: runs,
+    localRouting: readFleetAndLocalRouting(),
+    poolCooldowns: readPoolCooldownsSummary(),
+    quotaSummary: readQuotaSummary(),
+  };
+}
+
+function validateAndMergeBotsConfig(payload, actor) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, error: 'Request body must be a JSON object.' };
+  }
+  const topAllowed = new Set(['bots', 'retention']);
+  for (const key of Object.keys(payload)) {
+    if (!topAllowed.has(key)) {
+      return { ok: false, error: `Unknown configuration property "${key}".` };
+    }
+  }
+  const current = loadOffloadBotsConfig();
+  const next = JSON.parse(JSON.stringify(current));
+
+  if (payload.retention !== undefined) {
+    if (!payload.retention || typeof payload.retention !== 'object' || Array.isArray(payload.retention)) {
+      return { ok: false, error: 'retention must be an object.' };
+    }
+    for (const k of Object.keys(payload.retention)) {
+      if (k !== 'maxRunsPerBot') return { ok: false, error: `Unknown retention property "${k}".` };
+    }
+    if (payload.retention.maxRunsPerBot !== undefined) {
+      const m = payload.retention.maxRunsPerBot;
+      if (!Number.isInteger(m) || m < 5 || m > 100) {
+        return { ok: false, error: 'retention.maxRunsPerBot must be an integer between 5 and 100.' };
+      }
+      next.retention.maxRunsPerBot = m;
+    }
+  }
+
+  if (payload.bots !== undefined) {
+    if (!payload.bots || typeof payload.bots !== 'object' || Array.isArray(payload.bots)) {
+      return { ok: false, error: 'bots must be an object.' };
+    }
+    const perBotExtraKeys = {
+      'ops-preflight': new Set(['includeBackendSummary', 'includeCooldowns', 'includeQuotaMeter']),
+      'staging-deploy-verify': new Set(['autoVerifyHelp', 'allowedServices']),
+      'release-pack-sync': new Set(['strictCleanWorktree', 'allowBundleRebuild', 'allowFleetBroadcast']),
+    };
+    const commonKeys = new Set(['enabled', 'schedule', 'timeoutSec', 'maxLogLines']);
+    const allowedSvcSet = new Set(BOT_ALLOWED_SERVICES);
+
+    for (const [botId, patch] of Object.entries(payload.bots)) {
+      if (!Object.prototype.hasOwnProperty.call(BOT_CATALOG, botId)) {
+        return { ok: false, error: `Unknown bot "${botId}".` };
+      }
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        return { ok: false, error: `bots.${botId} must be an object.` };
+      }
+      const extraSet = Object.prototype.hasOwnProperty.call(perBotExtraKeys, botId) ? perBotExtraKeys[botId] : new Set();
+      for (const [k, val] of Object.entries(patch)) {
+        if (!commonKeys.has(k) && !extraSet.has(k)) {
+          return { ok: false, error: `Unknown property "bots.${botId}.${k}".` };
+        }
+        if (k === 'enabled' || k === 'includeBackendSummary' || k === 'includeCooldowns' || k === 'includeQuotaMeter' || k === 'autoVerifyHelp' || k === 'strictCleanWorktree' || k === 'allowBundleRebuild' || k === 'allowFleetBroadcast') {
+          if (typeof val !== 'boolean') return { ok: false, error: `bots.${botId}.${k} must be a boolean.` };
+        } else if (k === 'schedule') {
+          if (typeof val !== 'string' || !VALID_BOT_SCHEDULES.has(val)) {
+            return { ok: false, error: `bots.${botId}.schedule must be one of manual, hourly, daily.` };
+          }
+        } else if (k === 'timeoutSec') {
+          if (!Number.isInteger(val) || val < 10 || val > 600) {
+            return { ok: false, error: `bots.${botId}.timeoutSec must be an integer between 10 and 600.` };
+          }
+        } else if (k === 'maxLogLines') {
+          if (!Number.isInteger(val) || val < 10 || val > 200) {
+            return { ok: false, error: `bots.${botId}.maxLogLines must be an integer between 10 and 200.` };
+          }
+        } else if (k === 'allowedServices') {
+          if (!Array.isArray(val) || val.length === 0) {
+            return { ok: false, error: 'allowedServices must be a non-empty array of valid service names.' };
+          }
+          const clean = [];
+          for (const svc of val) {
+            if (typeof svc !== 'string' || !allowedSvcSet.has(svc)) {
+              return { ok: false, error: `Invalid service "${svc}" in allowedServices.` };
+            }
+            if (!clean.includes(svc)) clean.push(svc);
+          }
+          next.bots[botId].allowedServices = clean;
+          continue;
+        }
+        next.bots[botId][k] = val;
+      }
+    }
+  }
+
+  next.schemaVersion = hubState.schemaVersion || next.schemaVersion || '2026.11.6';
+  next.environment = 'STAGING';
+  next.updatedAt = new Date().toISOString();
+  next.updatedBy = actor || 'admin';
+  return { ok: true, config: next };
+}
+
+function executePool0Bot({ botId, mode, services = [], triggeredBy = 'admin', callerToken = '' }) {
+  if (!Object.prototype.hasOwnProperty.call(BOT_CATALOG, botId)) {
+    return Promise.resolve({ ok: false, status: 400, error: `Unknown botId "${botId}"` });
+  }
+  const spec = BOT_CATALOG[botId];
+  const effectiveMode = mode || spec.defaultMode;
+  if (!spec.modes.includes(effectiveMode)) {
+    return Promise.resolve({ ok: false, status: 400, error: `Invalid mode "${effectiveMode}" for bot "${botId}"` });
+  }
+  const config = loadOffloadBotsConfig();
+  const botCfg = config.bots[botId];
+  if (!botCfg || botCfg.enabled !== true) {
+    return Promise.resolve({ ok: false, status: 409, error: `Bot "${botId}" is disabled in offload-bots.json.` });
+  }
+  if (runningBots.has(botId)) {
+    return Promise.resolve({ ok: false, status: 409, error: `Bot "${botId}" is already running.` });
+  }
+
+  let validatedServices = [];
+  if (botId === 'staging-deploy-verify' && effectiveMode === 'deploy') {
+    if (!Array.isArray(services) || services.length === 0) {
+      return Promise.resolve({ ok: false, status: 400, error: 'deploy mode requires a non-empty services array.' });
+    }
+    const allowedSet = new Set(
+      (Array.isArray(botCfg.allowedServices) ? botCfg.allowedServices : []).filter((s) => BOT_ALLOWED_SERVICES.includes(s))
+    );
+    for (const rawSvc of services) {
+      const svc = typeof rawSvc === 'string' ? rawSvc.trim() : '';
+      if (!/^[a-z0-9-]+$/.test(svc) || !BOT_ALLOWED_SERVICES.includes(svc) || !allowedSet.has(svc)) {
+        return Promise.resolve({ ok: false, status: 400, error: `Disallowed deploy service "${svc}".` });
+      }
+      if (!validatedServices.includes(svc)) validatedServices.push(svc);
+    }
+  } else if (Array.isArray(services) && services.length > 0) {
+    return Promise.resolve({ ok: false, status: 400, error: 'services parameter is only valid for staging-deploy-verify deploy mode.' });
+  }
+
+  const botsDir = path.resolve(WORKSPACE_DIR, '.agents', 'scripts', 'bots');
+  const scriptPath = path.resolve(botsDir, spec.script);
+  if (!scriptPath.startsWith(botsDir + path.sep) || !fs.existsSync(scriptPath)) {
+    return Promise.resolve({ ok: false, status: 500, error: `Bot script missing: ${spec.script}` });
+  }
+
+  const argv = [scriptPath, '--mode', effectiveMode];
+  if (validatedServices.length > 0) {
+    argv.push('--services', validatedServices.join(','));
+  }
+
+  const startedAt = new Date().toISOString();
+  const startMs = Date.now();
+  const runId = `${botId}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  runningBots.set(botId, { botId, mode: effectiveMode, startedAt, triggeredBy });
+
+  const childEnv = {
+    ...process.env,
+    AGY_WORKSPACE_DIR: WORKSPACE_DIR,
+    AGY_ORCHESTRATOR_REPO_DIR: hubConfig.repoDir,
+    AGY_BOTS_CONFIG_FILE: BOTS_CONFIG_FILE,
+    AGY_LOCAL_ROUTING_FILE: LOCAL_ROUTING_FILE,
+    AGY_COOLDOWNS_FILE: COOLDOWNS_FILE,
+    AGY_GEMINI_QUOTA_FILE: GEMINI_QUOTA_FILE,
+  };
+  delete childEnv.AGY_BOT_CALLER_JWT;
+  if (botId === 'ops-preflight' && callerToken) {
+    childEnv.AGY_BOT_CALLER_JWT = callerToken;
+  }
+
+  const baseTimeoutSec = Math.min(600, Math.max(10, Number(botCfg.timeoutSec) || 60));
+  const outerGraceMs = botId === 'staging-deploy-verify' && effectiveMode === 'deploy' ? 20000 : 5000;
+  const timeoutMs = baseTimeoutSec * 1000 + outerGraceMs;
+
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      argv,
+      {
+        cwd: WORKSPACE_DIR,
+        timeout: timeoutMs,
+        shell: false,
+        env: childEnv,
+        maxBuffer: 4 * 1024 * 1024,
+      },
+      (err, stdout, stderr) => {
+        runningBots.delete(botId);
+        const finishedAt = new Date().toISOString();
+        const durationMs = Date.now() - startMs;
+        const cleanStdout = scrubSensitiveOutput(stdout).slice(0, 8192);
+        const cleanStderr = scrubSensitiveOutput(stderr).slice(0, 4096);
+
+        let parsed = null;
+        try {
+          parsed = JSON.parse(String(stdout || '').trim());
+        } catch {}
+
+        const runRecord = {
+          runId,
+          botId,
+          mode: effectiveMode,
+          services: validatedServices,
+          triggeredBy,
+          startedAt,
+          finishedAt,
+          durationMs,
+          ok: Boolean(parsed ? parsed.ok : !err),
+          exitCode: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+          summary: parsed?.summary ? scrubSensitiveOutput(parsed.summary) : err ? `Exited with error (${runRecordFallbackMsg(err)})` : 'Completed',
+          checks: Array.isArray(parsed?.checks)
+            ? parsed.checks.map((c) => ({
+                id: String(c.id || ''),
+                status: String(c.status || 'INFO'),
+                detail: scrubSensitiveOutput(c.detail || ''),
+              }))
+            : [],
+          metrics: parsed?.metrics && typeof parsed.metrics === 'object' ? parsed.metrics : {},
+          estimatedTokensSaved: Number(parsed?.estimatedTokensSaved ?? spec.estimatedTokensSaved ?? 0),
+          rawTail: cleanStderr ? `${cleanStdout}\n[stderr]\n${cleanStderr}`.slice(-8192) : cleanStdout,
+        };
+
+        try {
+          appendBotRunRecord(runRecord, config.retention?.maxRunsPerBot || 25);
+        } catch {}
+
+        resolve({ ok: true, status: 200, run: runRecord });
+      }
+    );
+  });
+}
+
+function runRecordFallbackMsg(err) {
+  return scrubSensitiveOutput(err?.message || 'failed').slice(0, 160);
 }
 
 function readRequestBody(req) {
@@ -1395,12 +2020,244 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, rotated: true, ...buildConfigTemplates() });
     }
 
+    // 10. Pool 0 Bots & Local Config State (STRICTLY Staging + Admin JWT)
+    if (req.method === 'GET' && p === '/api/agy-fleet/bots/state') {
+      const auth = await requireStagingAdmin(req);
+      if (!auth.ok) {
+        return sendJson(res, auth.status || 401, { ok: false, error: auth.reason || 'Unauthorized' });
+      }
+      return sendJson(res, 200, buildBotsStatePayload());
+    }
+
+    // 11. Update Pool 0 Offload Bots Config (STRICTLY Staging + Admin JWT + Strict Allowlist)
+    if (req.method === 'PUT' && p === '/api/agy-fleet/bots/config') {
+      const auth = await requireStagingAdmin(req);
+      if (!auth.ok) {
+        return sendJson(res, auth.status || 401, { ok: false, error: auth.reason || 'Unauthorized' });
+      }
+      const rawBody = await readRequestBody(req);
+      let body = {};
+      try {
+        body = JSON.parse(rawBody.toString('utf8') || '{}');
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+      }
+      const actor = String(auth.user?.username || auth.user?.email || 'admin');
+      const validated = validateAndMergeBotsConfig(body, actor);
+      if (!validated.ok) {
+        return sendJson(res, 400, { ok: false, error: validated.error });
+      }
+      try {
+        writePrivateJsonSafe(BOTS_CONFIG_FILE, validated.config);
+      } catch (err) {
+        return sendJson(res, 409, { ok: false, error: err.message });
+      }
+      return sendJson(res, 200, { ok: true, config: validated.config });
+    }
+
+    // 12. Execute Pool 0 Bot (STRICTLY Staging + Admin JWT + Strict Allowlists)
+    if (req.method === 'POST' && p === '/api/agy-fleet/bots/run') {
+      const auth = await requireStagingAdmin(req);
+      if (!auth.ok) {
+        return sendJson(res, auth.status || 401, { ok: false, error: auth.reason || 'Unauthorized' });
+      }
+      const rawBody = await readRequestBody(req);
+      let body = {};
+      try {
+        body = JSON.parse(rawBody.toString('utf8') || '{}');
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return sendJson(res, 400, { ok: false, error: 'Request body must be a JSON object.' });
+      }
+      for (const k of Object.keys(body)) {
+        if (k !== 'botId' && k !== 'mode' && k !== 'services') {
+          return sendJson(res, 400, { ok: false, error: `Unknown run parameter "${k}".` });
+        }
+      }
+      const actor = String(auth.user?.username || auth.user?.email || 'admin');
+      const result = await executePool0Bot({
+        botId: String(body.botId || '').trim(),
+        mode: body.mode !== undefined ? String(body.mode).trim() : undefined,
+        services: body.services,
+        triggeredBy: actor,
+        callerToken: auth.token || '',
+      });
+      if (!result.ok) {
+        return sendJson(res, result.status || 400, { ok: false, error: result.error });
+      }
+      return sendJson(res, 200, { ok: true, run: result.run });
+    }
+
+    // 13. Update Machine-Local Quota Guard Override (STRICTLY Staging + Admin JWT + Allowlisted Fields)
+    if (req.method === 'PUT' && p === '/api/agy-fleet/admin/local-routing') {
+      const auth = await requireStagingAdmin(req);
+      if (!auth.ok) {
+        return sendJson(res, auth.status || 401, { ok: false, error: auth.reason || 'Unauthorized' });
+      }
+      const rawBody = await readRequestBody(req);
+      let body = {};
+      try {
+        body = JSON.parse(rawBody.toString('utf8') || '{}');
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return sendJson(res, 400, { ok: false, error: 'Request body must be a JSON object.' });
+      }
+      const patchSource =
+        body.gemini_quota_guard !== undefined && Object.keys(body).length === 1
+          ? body.gemini_quota_guard
+          : body;
+      if (!patchSource || typeof patchSource !== 'object' || Array.isArray(patchSource)) {
+        return sendJson(res, 400, { ok: false, error: 'gemini_quota_guard must be a JSON object.' });
+      }
+      for (const k of Object.keys(patchSource)) {
+        if (!LOCAL_ROUTING_ALLOWLIST.has(k)) {
+          return sendJson(res, 400, { ok: false, error: `Field "${k}" is not allowlisted for model-routing.local.json.` });
+        }
+      }
+      const routingSnap = readFleetAndLocalRouting();
+      const existingLocalRes = readJsonSafeNoSymlink(LOCAL_ROUTING_FILE);
+      if (!existingLocalRes.ok && existingLocalRes.error === 'symlink_rejected') {
+        return sendJson(res, 409, { ok: false, error: 'Symlink target rejected for model-routing.local.json.' });
+      }
+      const prevGuard =
+        existingLocalRes.ok && existingLocalRes.data?.gemini_quota_guard && typeof existingLocalRes.data.gemini_quota_guard === 'object'
+          ? { ...existingLocalRes.data.gemini_quota_guard }
+          : {};
+      const nextGuard = { ...prevGuard };
+
+      if (patchSource.ctx_hard_limit_tokens !== undefined) {
+        const v = patchSource.ctx_hard_limit_tokens;
+        if (!Number.isInteger(v) || v < 100000 || v > 1000000) {
+          return sendJson(res, 400, { ok: false, error: 'ctx_hard_limit_tokens must be an integer between 100000 and 1000000.' });
+        }
+        nextGuard.ctx_hard_limit_tokens = v;
+      }
+      if (patchSource.ctx_warn_tokens !== undefined) {
+        const v = patchSource.ctx_warn_tokens;
+        if (!Number.isInteger(v) || v < 50000 || v > 950000) {
+          return sendJson(res, 400, { ok: false, error: 'ctx_warn_tokens must be an integer between 50000 and 950000.' });
+        }
+        nextGuard.ctx_warn_tokens = v;
+      }
+      if (patchSource.warn_threshold_pct !== undefined) {
+        const v = patchSource.warn_threshold_pct;
+        const reservePct = Number(routingSnap.fleetDefaults.reserve_threshold_pct ?? 10);
+        if (!Number.isInteger(v) || v < 15 || v > 60 || v <= reservePct) {
+          return sendJson(res, 400, {
+            ok: false,
+            error: `warn_threshold_pct must be an integer between 15 and 60 and > reserve_threshold_pct (${reservePct}).`,
+          });
+        }
+        nextGuard.warn_threshold_pct = v;
+      }
+      if (patchSource.reinject_minutes !== undefined) {
+        const v = patchSource.reinject_minutes;
+        if (!Number.isInteger(v) || v < 5 || v > 60) {
+          return sendJson(res, 400, { ok: false, error: 'reinject_minutes must be an integer between 5 and 60.' });
+        }
+        nextGuard.reinject_minutes = v;
+      }
+
+      const effHard = Number(nextGuard.ctx_hard_limit_tokens ?? routingSnap.effective.ctx_hard_limit_tokens);
+      const effWarn = Number(nextGuard.ctx_warn_tokens ?? routingSnap.effective.ctx_warn_tokens);
+      if (effWarn >= effHard) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: `ctx_warn_tokens (${effWarn}) must be strictly less than ctx_hard_limit_tokens (${effHard}).`,
+        });
+      }
+
+      const nextDoc = {
+        ...(existingLocalRes.ok && existingLocalRes.data && typeof existingLocalRes.data === 'object' ? existingLocalRes.data : {}),
+        gemini_quota_guard: nextGuard,
+      };
+      try {
+        writePrivateJsonSafe(LOCAL_ROUTING_FILE, nextDoc);
+      } catch (err) {
+        return sendJson(res, 409, { ok: false, error: err.message });
+      }
+      return sendJson(res, 200, { ok: true, localRouting: readFleetAndLocalRouting() });
+    }
+
+    // 14. Clear Pool Cooldown Entry or Cache (STRICTLY Staging + Admin JWT)
+    if (req.method === 'POST' && p === '/api/agy-fleet/admin/pool-cooldowns/clear') {
+      const auth = await requireStagingAdmin(req);
+      if (!auth.ok) {
+        return sendJson(res, auth.status || 401, { ok: false, error: auth.reason || 'Unauthorized' });
+      }
+      const rawBody = await readRequestBody(req);
+      let body = {};
+      try {
+        body = JSON.parse(rawBody.toString('utf8') || '{}');
+      } catch {
+        return sendJson(res, 400, { ok: false, error: 'Invalid JSON body' });
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return sendJson(res, 400, { ok: false, error: 'Request body must be a JSON object.' });
+      }
+      for (const k of Object.keys(body)) {
+        if (k !== 'key') return sendJson(res, 400, { ok: false, error: `Unknown parameter "${k}".` });
+      }
+      const targetKey = typeof body.key === 'string' ? body.key.trim() : '';
+      if (targetKey !== '*' && !/^[a-z0-9_]+:[A-Za-z0-9._:/-]{1,100}$/.test(targetKey)) {
+        return sendJson(res, 400, { ok: false, error: 'Invalid pool cooldown key.' });
+      }
+      const cdRes = readJsonSafeNoSymlink(COOLDOWNS_FILE);
+      if (!cdRes.ok && cdRes.error === 'symlink_rejected') {
+        return sendJson(res, 409, { ok: false, error: 'Symlink target rejected for pool-cooldowns.json.' });
+      }
+      const nextMap = cdRes.ok && cdRes.data && typeof cdRes.data === 'object' && !Array.isArray(cdRes.data)
+        ? { ...cdRes.data }
+        : {};
+      if (targetKey === '*') {
+        for (const k of Object.keys(nextMap)) delete nextMap[k];
+      } else {
+        delete nextMap[targetKey];
+      }
+      try {
+        writePrivateJsonSafe(COOLDOWNS_FILE, nextMap);
+      } catch (err) {
+        return sendJson(res, 409, { ok: false, error: err.message });
+      }
+      return sendJson(res, 200, { ok: true, cleared: targetKey, poolCooldowns: readPoolCooldownsSummary() });
+    }
+
     return sendJson(res, 404, { ok: false, error: 'Not Found' });
   } catch (err) {
     return sendJson(res, 500, { ok: false, error: err.message });
   }
 });
 
+// Optional lightweight read-only scheduler for bots configured with schedule='hourly'|'daily'
+const lastScheduledRunAt = new Map();
+if (process.env.AGY_DISABLE_BOT_SCHEDULER !== '1' && PORT !== 0) {
+  setInterval(() => {
+    try {
+      if (String(process.env.AGY_FLEET_ENV || 'staging').trim().toLowerCase() === 'production') return;
+      const cfg = loadOffloadBotsConfig();
+      const now = Date.now();
+      for (const [botId, spec] of Object.entries(BOT_CATALOG)) {
+        const bCfg = cfg.bots?.[botId];
+        if (!bCfg || bCfg.enabled !== true) continue;
+        const intervalMs = bCfg.schedule === 'hourly' ? 3600000 : bCfg.schedule === 'daily' ? 86400000 : 0;
+        if (!intervalMs || runningBots.has(botId)) continue;
+        const last = lastScheduledRunAt.get(botId) || 0;
+        if (now - last >= intervalMs) {
+          lastScheduledRunAt.set(botId, now);
+          // Strictly execute read-only defaultMode on unattended schedule
+          executePool0Bot({ botId, mode: spec.defaultMode, services: [], triggeredBy: `scheduler:${bCfg.schedule}` });
+        }
+      }
+    } catch {}
+  }, 60000).unref();
+}
+
 server.listen(PORT, HOST, () => {
-  console.log(`🚀 Antigravity Fleet Push Hub listening on http://${HOST}:${PORT}`);
+  const addr = server.address();
+  const actualPort = addr && typeof addr === 'object' ? addr.port : PORT;
+  console.log(`🚀 Antigravity Fleet Push Hub listening on http://${HOST}:${actualPort}`);
 });
