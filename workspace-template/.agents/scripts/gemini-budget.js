@@ -25,7 +25,10 @@
 //                                                  ending at the last metered step <= --at
 // Env overrides (tests / non-standard installs):
 //   AGY_GEMINI_QUOTA_FILE, AGY_BRAIN_DIR, AGY_GEMINI_BUDGET_CACHE,
-//   AGY_MODEL_ROUTING_FILE, AGY_GEMINI_GUARD_STATE, AGY_GEMINI_BUDGET_NOW (ISO, tests)
+//   AGY_MODEL_ROUTING_FILE, AGY_MODEL_ROUTING_LOCAL_FILE,
+//   AGY_GEMINI_GUARD_STATE, AGY_GEMINI_BUDGET_NOW (ISO, tests)
+// Machine-local guard overrides (optional, ignored by git/agy-arch-sync):
+//   ~/.gemini/config/model-routing.local.json -> { "gemini_quota_guard": { ... } }
 // =============================================================================
 'use strict';
 
@@ -87,14 +90,77 @@ function resolveRoutingFiles(repoRoot) {
   return list;
 }
 
+const LOCAL_OVERRIDE_ALLOWLIST = new Set([
+  'ctx_hard_limit_tokens',
+  'ctx_warn_tokens',
+  'reinject_minutes',
+  'warn_threshold_pct',
+]);
+
+function applyLocalGuardOverrides(cfg) {
+  let localFile = '';
+  if (process.env.AGY_MODEL_ROUTING_LOCAL_FILE) {
+    localFile = process.env.AGY_MODEL_ROUTING_LOCAL_FILE;
+  } else if (!process.env.AGY_MODEL_ROUTING_FILE) {
+    // Skip host model-routing.local.json when AGY_MODEL_ROUTING_FILE isolates test runs.
+    localFile = path.join(CONFIG_DIR, 'model-routing.local.json');
+  }
+  if (!localFile) return cfg;
+  const localJson = readJson(localFile);
+  if (!localJson || !localJson.gemini_quota_guard || typeof localJson.gemini_quota_guard !== 'object' || Array.isArray(localJson.gemini_quota_guard)) {
+    return cfg;
+  }
+  const overrides = localJson.gemini_quota_guard;
+  const baseWarn = cfg.warn_threshold_pct;
+  const baseCtxWarn = cfg.ctx_warn_tokens;
+  const baseCtxHard = cfg.ctx_hard_limit_tokens;
+  const appliedKeys = new Set();
+  for (const key of LOCAL_OVERRIDE_ALLOWLIST) {
+    if (!Object.prototype.hasOwnProperty.call(overrides, key)) continue;
+    const val = overrides[key];
+    if (typeof val !== 'number' || !Number.isFinite(val)) continue;
+    if (key === 'warn_threshold_pct') {
+      if (val >= 0 && val <= 100) {
+        cfg[key] = val;
+        appliedKeys.add(key);
+      }
+    } else if (key === 'reinject_minutes') {
+      if (val >= 0) {
+        cfg[key] = val;
+        appliedKeys.add(key);
+      }
+    } else {
+      // ctx_hard_limit_tokens, ctx_warn_tokens
+      if (val > 0) {
+        cfg[key] = val;
+        appliedKeys.add(key);
+      }
+    }
+  }
+  if (Number(cfg.warn_threshold_pct) <= Number(cfg.reserve_threshold_pct)) {
+    cfg.warn_threshold_pct = baseWarn;
+    appliedKeys.delete('warn_threshold_pct');
+  }
+  if (Number(cfg.ctx_hard_limit_tokens) <= Number(cfg.ctx_warn_tokens)) {
+    cfg.ctx_warn_tokens = baseCtxWarn;
+    cfg.ctx_hard_limit_tokens = baseCtxHard;
+    appliedKeys.delete('ctx_warn_tokens');
+    appliedKeys.delete('ctx_hard_limit_tokens');
+  }
+  if (appliedKeys.size > 0) cfg._localOverride = localFile;
+  return cfg;
+}
+
 function loadGuardConfig(repoRoot) {
+  let cfg = Object.assign({}, DEFAULT_GUARD, { _source: 'defaults' });
   for (const f of resolveRoutingFiles(repoRoot)) {
     const j = readJson(f);
     if (j && j.gemini_quota_guard && typeof j.gemini_quota_guard === 'object') {
-      return Object.assign({}, DEFAULT_GUARD, j.gemini_quota_guard, { _source: f });
+      cfg = Object.assign({}, DEFAULT_GUARD, j.gemini_quota_guard, { _source: f });
+      break;
     }
   }
-  return Object.assign({}, DEFAULT_GUARD, { _source: 'defaults' });
+  return applyLocalGuardOverrides(cfg);
 }
 
 // -----------------------------------------------------------------------------
@@ -402,6 +468,7 @@ function computeBudget(opts = {}) {
     enabled: cfg.enabled !== false,
     auto: cfg.auto !== false,
     config_source: cfg._source,
+    local_override_source: cfg._localOverride || null,
     windows: {
       five_hour: {
         hours: windowHours,
@@ -555,6 +622,7 @@ function hookFragment(input = {}, repoRoot) {
   const parts = [`⛽ Gemini5h=${w5.remaining_pct ?? 'n/a'}%`];
   if (wk.remaining_pct !== null) parts.push(`wk=${wk.remaining_pct}%`);
   if (ctxTok) parts.push(`ctx=${fmtK(ctxTok)}`);
+  if (cfg._localOverride) parts.push('⚙local');
   if (applied.reserve) parts.push(`🚨 RESERVE(${applied.source})`);
   result.statusSuffix = ` | ${parts.join(' ')}`;
 
@@ -758,8 +826,9 @@ if (require.main === module) {
         const wk = b.windows.weekly;
         const resetTxt = w.resets_at ? `, resets ${w.resets_at}` : ', idle/expired';
         const syncTxt = w.sync_anchor ? ` [sync=${w.sync_anchor.synced_remaining_pct}%+${fmtK(w.sync_anchor.delta_since_sync)}]` : '';
+        const localTxt = b.local_override_source ? `, local: ${b.local_override_source}` : '';
         const lines = [
-          `Gemini Budget Meter @ ${b.at}  (config: ${b.config_source}, auto=${b.auto})`,
+          `Gemini Budget Meter @ ${b.at}  (config: ${b.config_source}${localTxt}, auto=${b.auto})`,
           `  5h window : used ${fmtK(w.used_tokens)} / ${fmtK(w.budget_tokens || 0)} -> remaining ${w.remaining_pct}%  (${w.steps} steps, excluded non-Gemini ${fmtK(w.excluded_non_gemini_tokens)}${resetTxt})${syncTxt}`,
           `  7d window : used ${fmtK(wk.used_tokens)} / ${wk.budget_tokens ? fmtK(wk.budget_tokens) : 'unbounded'} -> remaining ${wk.remaining_pct ?? 'n/a'}%`,
           `  EFFECTIVE remaining = ${b.remaining_pct}%  (reserve < ${b.thresholds.reserve}%, restore >= ${b.thresholds.restore}%, warn < ${b.thresholds.warn}%)`,

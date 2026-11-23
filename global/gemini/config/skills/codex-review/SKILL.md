@@ -11,7 +11,7 @@ description: >-
 Full rules: `.agents/rules/40-codex-integration.md`. Antigravity is the **SINGLE WRITER**; all external CLIs (`Codex`, `Claude Code`, `OpenCode DeepSeek`) run strictly **READ-ONLY**.
 
 ## A. Deep Debugging / Root-Cause Analysis (`codex-rca.sh`)
-1. Collect concrete evidence first (logs, failing request, stack trace) into `/tmp/rca-logs.txt` (use a `T1` Explorer — `Gemini 4 Hydrogen Low`, or `Model: "flash"` `3.8 Flash` strictly for raw bulk log scans from non-Orchestrator turns — if log slicing >5 files).
+1. Collect concrete evidence first (logs, failing request, stack trace) into `/tmp/rca-logs.txt` (use a `T1` Explorer — `swarm` `Gemini 4 Hydrogen Low`, or Pool D `frontier-orchestrate.sh --tier flash` `DeepSeek-Flash` for massive raw log dumps; NEVER `Gemini 3.8 Flash` outside `browser` — if log slicing >5 files).
 2. Run the Multi-CLI RCA cascade (`Codex gpt-6-astra xhigh` → `Claude opus/sonnet high` → `OpenCode deepseek-v4-pro` → exit `2`):
    ```bash
    bash .agents/scripts/codex-rca.sh -a /tmp/rca-logs.txt "Περιγραφή συμπτώματος, πότε ξεκίνησε, τι αλλάξαμε"

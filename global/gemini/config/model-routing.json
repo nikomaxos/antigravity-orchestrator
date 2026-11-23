@@ -1,6 +1,6 @@
 {
-  "schema_version": "2026.11.4",
-  "updated_at": "2026-11-19T00:00:00Z",
+  "schema_version": "2026.11.5",
+  "updated_at": "2026-11-23T08:35:00Z",
   "fleet_sync": {
     "mode": "sse-push+daily-fallback",
     "daily_interval_seconds": 86400,
@@ -37,11 +37,11 @@
         },
         "t1_explorer": {
           "id": "gemini-4-hydrogen-low",
-          "display_name": "Gemini 4 Hydrogen (Low)",
-          "legacy_subagent_enum_id": "gemini-3.8-flash-low",
-          "subagent_model": "inherit_on_hydrogen_or_flash_from_carbon",
+          "escalation_id": "gemini-4-hydrogen-medium",
+          "display_name": "Gemini 4 Hydrogen (Low/Medium)",
+          "subagent_model": "inherit_on_hydrogen_or_swarm_hydrogen_low",
           "default_effort": "low",
-          "role": "Primary T1 Fast Explorer / Triage / Docs (2.5x faster, 57% vs 18.2% Terminal-Bench 4.1, >5x fewer hallucinations; use invoke_subagent Model='flash' only for browser subagent or bulk raw I/O from non-Orchestrator Carbon/Neon/Argon turns)"
+          "role": "Primary T1 Fast Explorer / Live-Ops Pre-Flight / Triage / Docs (2.5x faster, 57% vs 18.2% Terminal-Bench 4.1, >5x fewer hallucinations). Orchestrator turns: exit_plan_mode -> Step 0 Read-Only Pre-Flight in Hydrogen (with Re-plan if: guard). Non-Orchestrator turns: swarm gemini-4-hydrogen-low (or medium for critical live production API/GSM/SMPP/bitmask checks). Massive 100K+ non-critical log dumps: Pool D DeepSeek-Flash (frontier-orchestrate.sh --tier flash). Gemini 3.8 Flash (Model='flash') is STRICTLY FORBIDDEN for all non-browser tasks."
         },
         "t2_coding": {
           "id": "gemini-4-hydrogen-medium",
@@ -106,6 +106,13 @@
           "display_name": "Gemini 4 Hydrogen (Low/Medium)",
           "default_effort": "low",
           "role": "Gatekeeper & Release Execution Worker (replaces 3.8 Flash)"
+        },
+        "browser_subagent": {
+          "id": "gemini-3.8-flash-medium",
+          "subagent_model": "flash",
+          "browser_only": true,
+          "default_effort": "medium",
+          "role": "STRICTLY BROWSER-ONLY subagent default (0.5x vision/DOM token cost; Model='inherit' on Hydrogen for complex multi-step UI flows). EXPLICITLY FORBIDDEN for T1 exploration, live-ops/production pre-flight checks, API/DB/modem/SMPP queries, worker checks, scripts, code verification, or bulk raw log scans."
         }
       }
     },
@@ -311,7 +318,7 @@
     {"pool": "pool_d", "tier_key": "pro_fallback"}
   ],
   "gemini_quota_guard": {
-    "_comment": "AUTOMATIC Gemini reserve trigger (workspace .agents/scripts/gemini-budget.js, run by preflight on every PreInvocation). Self-meters PLANNER_RESPONSE tokens (input + output + cache_read*cache_read_weight) from ~/.gemini/antigravity/brain/*/transcript.jsonl over a rolling 5h window and a rolling 7d window. five_hour_token_budget calibrated 2026-11-18 from the real 5h-limit exhaustion: 238.8M observed in 05:29:30Z-10:29:30Z (1002 steps) x 0.95 safety. Manual gemini-quota-mode.sh --set-reserve (source=manual) is never overridden.",
+    "_comment": "AUTOMATIC Gemini reserve trigger (workspace .agents/scripts/gemini-budget.js, run by preflight on every PreInvocation). Self-meters PLANNER_RESPONSE tokens (input + output + cache_read*cache_read_weight) from ~/.gemini/antigravity/brain/*/transcript.jsonl over a rolling 5h window and a rolling 7d window. five_hour_token_budget calibrated 2026-11-18 from the real 5h-limit exhaustion: 238.8M observed in 05:29:30Z-10:29:30Z (1002 steps) x 0.95 safety. Optional machine-local threshold overrides (strictly allowlisted: ctx_hard_limit_tokens, ctx_warn_tokens, reinject_minutes, warn_threshold_pct) live in ~/.gemini/config/model-routing.local.json (never touched by agy-arch-sync). Manual gemini-quota-mode.sh --set-reserve (source=manual) is never overridden.",
     "enabled": true,
     "auto": true,
     "window_hours": 5,

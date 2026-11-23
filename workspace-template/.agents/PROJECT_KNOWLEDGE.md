@@ -12,9 +12,9 @@ This repository is protected by the Antigravity Multi-Model Orchestrator and Gat
 ---
 
 ## 2. Pure Zero-Hands-On Orchestrator & 4-Pool Model Routing
-1. **Universal Parent Orchestrator (Default: `Orchestrator (Carbon -> Hydrogen)` / `Orchestrator (Neon -> Hydrogen)` / `Gemini 4 Carbon Medium`)**: Planning turns stay ultra-thin (`<35K` tokens, `~1s` latency on `Carbon`/`Neon`), while `exit_plan_mode` hands execution directly to **`Gemini 4 Hydrogen`** (`2.5x` faster, `57%` vs `18.2%` Terminal-Bench 4.1, `>5x` fewer hallucinations, `19%` faster workflows & `~24%` less quota). Never downgrade `Hydrogen` turns to `Model: "flash"` (`3.8 Flash`).
-2. **External-First Frontier Offload (`frontier-orchestrate.sh`, `schema_version: 2026.11.4`)**:
-   - `T1` Fast Explorer (`Gemini 4 Hydrogen Low` via `swarm`/`inherit`; keep `Model: "flash"` `3.8 Flash` strictly for `browser` subagent & bulk raw log scans from non-Orchestrator `Carbon`/`Neon` turns): Codebase exploration, log slicing, read-only queries.
+1. **Universal Parent Orchestrator (Default: `Orchestrator (Carbon -> Hydrogen)` / `Orchestrator (Neon -> Hydrogen)` / `Gemini 4 Carbon Medium`)**: Planning turns stay ultra-thin (`<35K` tokens, `~1s` latency on `Carbon`/`Neon`), while `exit_plan_mode` hands execution directly to **`Gemini 4 Hydrogen`** (`2.5x` faster, `57%` vs `18.2%` Terminal-Bench 4.1, `>5x` fewer hallucinations, `19%` faster workflows & `~24%` less quota). In `Orchestrator` mode, never spawn `invoke_subagent(Model="flash")` (`3.8 Flash`) for pre-flight checks — pass directly via `exit_plan_mode` into **`Gemini 4 Hydrogen`** **Step 0: Read-Only Pre-Flight Check** with a `Re-plan if:` guard. **`Gemini 3.8 Flash` is permitted EXCLUSIVELY for the `browser` subagent.**
+2. **External-First Frontier Offload (`frontier-orchestrate.sh`, `schema_version: 2026.11.5`)**:
+   - `T1` Fast Explorer & Live-Ops Pre-Flight (`Gemini 4 Hydrogen Low` via `swarm` `gemini-4-hydrogen-low` / `inherit`, or `Gemini 4 Hydrogen Medium` for critical live production checks; Pool D `DeepSeek-Flash` via `frontier-orchestrate.sh --tier flash` for massive non-critical `100K+` log dumps — NEVER `3.8 Flash`): Codebase exploration, live-ops pre-flight, log slicing, read-only queries.
    - `T2` UI / Frontend / Tests (`Gemini 4 Hydrogen Medium` / `Gemini 4 Neon Low|Medium` + `frontier-orchestrate.sh --tier ui`: Claude Sonnet 5.5 -> Codex gpt-6.1-terra med -> DeepSeek-V4-Pro).
    - `T3` Multi-Service / Backend (`Gemini 4 Neon High` `65.2%` Terminal-Bench 4.1 & `-25%` cost vs Carbon / `Gemini 4 Hydrogen High` + `frontier-orchestrate.sh --tier backend`: Codex gpt-6.1-sol high -> Claude Sonnet 5.5 high -> DeepSeek-V4-Pro).
    - `T4` Critical Architecture & Security (`codex-rca.sh` / `frontier-orchestrate.sh --tier deep`: Codex gpt-6-astra xhigh -> Claude Opus 5.5 high -> DeepSeek-V4-Pro, fallback `Carbon High` / `Neon XHigh` (`0.0%` shortcut rate) / `Hydrogen XHigh` / `Argon High`).
@@ -32,7 +32,7 @@ This repository is protected by the Antigravity Multi-Model Orchestrator and Gat
 
 ## 📝 Recent Outcomes
 <!-- Chronological record of completed architectural changes, features, and fixes -->
-- Initialized workspace with Antigravity 4-Pool Multi-Model Orchestrator & agy-gatekeeper enforcement (`schema_version: 2026.11.4`).
+- Initialized workspace with Antigravity 4-Pool Multi-Model Orchestrator & agy-gatekeeper enforcement (`schema_version: 2026.11.5`).
 
 ### 🚨 ΚΑΝΟΝΑΣ ΕΚΤΑΚΤΗΣ ΕΦΕΔΡΕΙΑΣ QUOTA (`< 10%` Gemini Weekly/Monthly Limit — Zero-Gemini Pass-Through Mode)
 - **Συνθήκη Ενεργοποίησης (`gemini-quota-mode.sh --set-reserve <pct>`)**: Όταν το weekly/monthly limit πέφτει **κάτω από `10%` σε όλα τα μοντέλα Gemini** (ελέγχεται μέσω `~/.gemini/config/gemini-quota.json` και εμφανίζεται στο preflight ως `🚨 GEMINI_QUOTA=<10%`), ενεργοποιείται αυτόματα το **Zero-Gemini Pass-Through Reserve Mode**.
