@@ -6,11 +6,14 @@
 #             sync-security-from-review.sh, commit-gate.sh, preflight.sh
 # Do NOT execute directly.
 #
-# 4 Orthogonal Pools (Single-Writer Invariant: ONLY Antigravity writes files):
+# Active Automated Pools (Single-Writer Invariant: ONLY Antigravity writes files):
+#   - Pool 0: Deterministic Linux Offload Bots (`0` LLM tokens)
 #   - Pool B: OpenAI Codex CLI (`codex exec` / `codex exec resume`, `-s read-only`)
 #   - Pool C: Anthropic Claude Code CLI (`claude -p --permission-mode plan`)
-#   - Pool D: OpenCode CLI (`opencode run --agent readonly-auditor` + DeepSeek API)
-#   - Pool A: Antigravity Native (`--fallback` subagent ONLY if B+C+D all fail)
+#   - Pool A: Antigravity Native (`--fallback` subagent ONLY if B+C both fail)
+#   - Pool D (Manual-Only): OpenCode CLI + DeepSeek API — NEVER invoked automatically;
+#     only runs when explicitly triggered by the user (`/opencode`, `--cli opencode`,
+#     or `stage0-precheck.sh --manual`).
 #
 # Every external CLI invocation verifies `before_fp == after_fp` on the worktree!
 # =============================================================================
@@ -134,7 +137,7 @@ llm_load_model_routing() {
     CLAUDE_R3_FALLBACK=$(llm_validate_model "$(_jq_review '.review_cascades.r3.pool_c.fallback // "opus"' 'opus')" "opus")
     CLAUDE_R3_FALLBACK2=$(llm_validate_model "$(_jq_review '.pools.pool_c.models.review.r3.secondary_fallback // "claude-sonnet-5-5"' 'claude-sonnet-5-5')" "claude-sonnet-5-5")
     CLAUDE_R3_EFFORT=$(llm_validate_effort "$(_jq_review '.review_cascades.r3.pool_c.effort // "high"' 'high')" "high")
-    OPENCODE_REVIEW_MODEL=$(llm_validate_model "$(_jq_review '.review_cascades.r3.pool_d.model // "deepseek/deepseek-v4-pro"' 'deepseek/deepseek-v4-pro')" "deepseek/deepseek-v4-pro")
+    OPENCODE_REVIEW_MODEL="$OPENCODE_PRO_MODEL"
     local mt_r1 mt_r2 mt_r3
     mt_r1=$(_jq_review '.review_cascades.r1.claude_max_turns // "10"' '10')
     [[ "$mt_r1" =~ ^[0-9]+$ ]] && [ "$mt_r1" -ge 1 ] && [ "$mt_r1" -le 50 ] && CLAUDE_R1_MAX_TURNS="$mt_r1"
@@ -678,15 +681,15 @@ pool_cooldown_clear() {  # $1 = pool_key
   )
 }
 
-routing_get_review_cascade() {  # $1 = R1|R2|R3 -> always outputs normalized space-separated all-3 pools
+routing_get_review_cascade() {  # $1 = R1|R2|R3 -> always outputs normalized space-separated automated pools (pool_b & pool_c; pool_d is manual-only)
   local tier_raw="${1:-R3}" t=""
   case "$tier_raw" in
     R1|r1) t="r1" ;;
     R2|r2) t="r2" ;;
     *)     t="r3" ;;
   esac
-  local def_list="pool_b pool_c pool_d"
-  [ "$t" = "r3" ] && def_list="pool_c pool_b pool_d"
+  local def_list="pool_b pool_c"
+  [ "$t" = "r3" ] && def_list="pool_c pool_b"
 
   local arr=""
   if command -v jq >/dev/null 2>&1; then
@@ -696,21 +699,22 @@ routing_get_review_cascade() {  # $1 = R1|R2|R3 -> always outputs normalized spa
     fi
     if [ -n "$head_json" ]; then
       # Strictly honor committed HEAD only when inside repo (prevents agent-writable home config tampering)
-      arr=$(printf '%s' "$head_json" | jq -r --arg t "$t" '(.review_cascades[$t].cascade // []) | map(select(. == "pool_b" or . == "pool_c" or . == "pool_d")) | join(" ")' 2>/dev/null || true)
+      # Allowlist strictly automated pools (pool_b, pool_c) — pool_d (DeepSeek) is manual-only.
+      arr=$(printf '%s' "$head_json" | jq -r --arg t "$t" '(.review_cascades[$t].cascade // []) | map(select(. == "pool_b" or . == "pool_c")) | join(" ")' 2>/dev/null || true)
     else
       local cfg="${MODEL_ROUTING_FILE:-${HOME}/.gemini/config/model-routing.json}"
       [ ! -f "$cfg" ] && [ -n "${CODEX_REPO_ROOT:-}" ] && [ -f "${CODEX_REPO_ROOT}/.agents/config/model-routing.json" ] && cfg="${CODEX_REPO_ROOT}/.agents/config/model-routing.json"
       if [ -f "$cfg" ]; then
-        arr=$(jq -r --arg t "$t" '(.review_cascades[$t].cascade // []) | map(select(. == "pool_b" or . == "pool_c" or . == "pool_d")) | join(" ")' "$cfg" 2>/dev/null || true)
+        arr=$(jq -r --arg t "$t" '(.review_cascades[$t].cascade // []) | map(select(. == "pool_b" or . == "pool_c")) | join(" ")' "$cfg" 2>/dev/null || true)
       fi
     fi
   fi
 
-  # Normalize: deduplicate and ensure ALL 3 pools are always present
+  # Normalize: deduplicate and ensure BOTH automated external pools (pool_b, pool_c) are always present
   local out="" p
   for p in $arr $def_list; do
     case "$p" in
-      pool_b|pool_c|pool_d)
+      pool_b|pool_c)
         case " $out " in
           *" $p "*) ;;
           *) out="${out:+${out} }${p}" ;;

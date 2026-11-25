@@ -120,13 +120,13 @@ This repository houses the Home Assistant (Oraiokastro) integration and Antigrav
 
 ---
 
-## 2. Pure Zero-Hands-On Orchestrator & 4-Pool Model Routing
-1. **Universal Parent Orchestrator (Default: \`Orchestrator (Carbon -> Hydrogen)\` / \`Orchestrator (Neon -> Hydrogen)\` / \`Gemini 4 Carbon Medium\`)**: Planning turns stay pure & \`<35K\` tokens, while \`exit_plan_mode\` hands execution directly to **\`Gemini 4 Hydrogen\`** (\`2.5x\` faster, \`57%\` vs \`18.2%\` Terminal-Bench 4.1, \`>5x\` fewer hallucinations).
-2. **External-First Frontier Offload (\`frontier-orchestrate.sh\`, \`schema_version: 2026.11.6\`)**:
-   - \`T1\` Fast Explorer & Live-Ops Pre-Flight (\`Gemini 4 Hydrogen Low\` via \`Orchestrator Step 0 Pre-Flight\` / \`swarm\` \`gemini-4-hydrogen-low\` / \`inherit\`, or \`Gemini 4 Hydrogen Medium\` for critical live production checks; Pool D \`DeepSeek-Flash\` via \`frontier-orchestrate.sh --tier flash\` for massive non-critical \`100K+\` log dumps; \`3.8 Flash\` STRICTLY \`browser\` subagent only): Codebase exploration, live-ops pre-flight, log slicing, read-only queries.
-   - \`T2\` UI / Frontend / Tests (\`Gemini 4 Hydrogen Medium\` / \`Gemini 4 Neon Low|Medium\` + \`frontier-orchestrate.sh --tier ui\`: Claude Sonnet 5.5 -> Codex gpt-6.1-terra med -> DeepSeek-V4-Pro).
-   - \`T3\` Multi-Service / Backend (\`Gemini 4 Neon High\` / \`Gemini 4 Hydrogen High\` + \`frontier-orchestrate.sh --tier backend\`: Codex gpt-6.1-sol high -> Claude Sonnet 5.5 high -> DeepSeek-V4-Pro).
-   - \`T4\` Critical Architecture & Security (\`codex-rca.sh\` / \`frontier-orchestrate.sh --tier deep\`: Codex gpt-6-astra xhigh -> bounded Claude Sonnet 5.5 high [\`--opus\` opt-in] -> DeepSeek-V4-Pro, fallback \`Carbon High\` / \`Neon XHigh\` / \`Hydrogen XHigh\` / \`Argon High\`; \`R3\` review: Pool C Claude Opus 5.5 high primary -> Pool B Codex gpt-6-astra high -> Pool D).
+## 2. Pure Zero-Hands-On Orchestrator & Multi-Pool Routing (`schema_version: 2026.11.7`, Antigravity `v2.35.1`)
+1. **Universal Parent Orchestrator (`Orchestrator (Carbon -> Hydrogen)` / `Orchestrator (Neon -> Hydrogen)` — v2.35+ default `High` effort)**: Planning turns stay pure & \`<35K\` tokens, while \`exit_plan_mode\` hands execution directly to **\`Gemini 4 Hydrogen\`** (\`2.5x\` faster, \`57%\` vs \`18.2%\` Terminal-Bench 4.1, \`>5x\` fewer hallucinations).
+2. **External-First Frontier Offload (\`frontier-orchestrate.sh\`, active automated pools B/C; DeepSeek is STRICTLY MANUAL-ONLY via \`/opencode\`)**:
+   - \`T1\` Fast Explorer & Live-Ops Pre-Flight (\`Gemini 4 Hydrogen Low\` via \`Orchestrator Step 0 Pre-Flight\` / \`swarm\` \`gemini-4-hydrogen-low\` / \`inherit\`, or \`Gemini 4 Hydrogen Medium\` for critical live checks; Reserve \`--tier flash\`: Pool C \`Claude Sonnet 5.5 low\` -> Pool B \`Codex gpt-6-luna low\`; \`3.8 Flash\` STRICTLY \`browser\` subagent only).
+   - \`T2\` UI / Frontend / Tests (\`Gemini 4 Hydrogen Medium\` / \`Gemini 4 Neon Low|Medium\` + \`frontier-orchestrate.sh --tier ui\`: Claude Sonnet 5.5 -> Codex gpt-6.1-terra med / sol).
+   - \`T3\` Multi-Service / Backend (\`Gemini 4 Neon High\` / \`Gemini 4 Hydrogen High\` + \`frontier-orchestrate.sh --tier backend\`: Codex gpt-6.1-sol high / astra -> Claude Sonnet 5.5 high).
+   - \`T4\` Critical Architecture & Security (\`codex-rca.sh\` / \`frontier-orchestrate.sh --tier deep\`: Codex gpt-6-astra xhigh / sol -> bounded Claude Sonnet 5.5 high [\`--opus\` opt-in], fallback \`Carbon High\` / \`Neon XHigh\` / \`Hydrogen XHigh\` / \`Argon High\`; \`R3\` review: Pool C Claude Opus 5.5 high primary -> Pool B Codex gpt-6-astra high).
    - Release & Gatekeeper Worker (\`Gemini 4 Hydrogen Low/Medium\`): Executes QA, Regression, Docs, Vault, Skills, and Review gates.
 3. **Root Gatekeeper (\`agy-gatekeeper.service\` on \`127.0.0.1:18099\`)**: Cryptographic HMAC signing and verification of \`.agent-state/*.json\`.
 

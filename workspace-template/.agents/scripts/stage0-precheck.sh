@@ -1,20 +1,35 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Stage-0 Cheap Pre-Gate Self-Check (`stage0-precheck.sh`)
+# Stage-0 Optional Manual DeepSeek Pre-Check (`stage0-precheck.sh`)
 # =============================================================================
-# Runs Pool D (`opencode` + `deepseek/deepseek-v4-pro`, or free fallback if key
-# is not set yet) in strict READ-ONLY mode against `git diff HEAD` BEFORE
-# Commit Gate so obvious bugs are fixed for ~$0.01-$0.02 instead of burning
-# subscription quota!
+# MANUAL-ONLY TOOL: Pool D (OpenCode + DeepSeek) is disabled from all automated
+# workflows and cascades. Agents MUST NEVER run this script automatically.
+# Pass `--manual` (or `AGY_ALLOW_MANUAL_DEEPSEEK=1`) when explicitly triggered
+# by the operator on demand.
 # =============================================================================
 set -euo pipefail
 
-export HOME="${HOME:-$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || echo "${USERPROFILE:-/home/nick}")}"
-export PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:${PATH}"
+MANUAL_TRIGGER="${AGY_ALLOW_MANUAL_DEEPSEEK:-0}"
+ARGS=()
+for arg in "$@"; do
+  if [ "$arg" = "--manual" ]; then
+    MANUAL_TRIGGER=1
+  else
+    ARGS+=("$arg")
+  fi
+done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$MANUAL_TRIGGER" != "1" ]; then
+  echo "ℹ️  stage0-precheck.sh uses Pool D (DeepSeek / OpenCode), which is configured as MANUAL-ONLY."
+  echo "   Pass --manual to run it explicitly on demand (agents must NEVER invoke this automatically)."
+  exit 0
+fi
+
+set -- "${ARGS[@]+"${ARGS[@]}"}"
+
+export PATH="/home/nick/.opencode/bin:/home/nick/.local/bin:${PATH}"
 # shellcheck source=codex-lib.sh
-source "${SCRIPT_DIR}/codex-lib.sh"
+source "/home/nick/Development/messaging-agent/.agents/scripts/codex-lib.sh"
 cd "$CODEX_REPO_ROOT"
 
 DIFF=""
@@ -38,7 +53,7 @@ if [ -z "$DIFF" ]; then
   exit 0
 fi
 
-STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+STAMP=$(date -u +%Y%m%dT%H:%M%SZ)
 PROMPT_FILE="${CODEX_REPORT_DIR}/stage0-${STAMP}.prompt.md"
 OUT_JSON="${CODEX_REPORT_DIR}/stage0-latest.json"
 
@@ -46,8 +61,9 @@ OUT_JSON="${CODEX_REPORT_DIR}/stage0-latest.json"
   cat <<'EOF'
 # STAGE-0 PRE-GATE DEFECT CHECK (STRICT READ-ONLY)
 Inspect the working-tree diff below BEFORE staging/commit. Identify ONLY genuine bugs,
-null pointer hazards, concurrency races, syntax errors, OWASP security flaws, or
-violations of workspace invariants in `AGENTS.md`.
+null/concurrency/SQL/Flyway hazards, OWASP security flaws, or violations of workspace
+invariants (`Locale.US` in `String.format`, no `java.sql.Timestamp` in native queries,
+No-Hardcoded-Routing, UI design system preservation).
 Do NOT modify any files. Write findings in Greek.
 EOF
   echo ""
@@ -75,7 +91,7 @@ echo "📊 Stage-0 Pre-Check Findings: ${COUNTS}"
 jq -r '.findings[]? | "  - [\(.severity)] \(.file):\(.line // "-") — \(.title): \(.recommendation)"' "$OUT_JSON" 2>/dev/null || true
 
 if [ "$BLOCKING" -gt 0 ]; then
-  echo "⚠️  Stage-0 caught ${BLOCKING} CRITICAL/HIGH issue(s) early! Fix them now before running Commit Gate."
+  echo "⚠️  Stage-0 caught ${BLOCKING} CRITICAL/HIGH issue(s) early! Fix them now before running Staging/Codex Gate."
   exit 1
 fi
 echo "✅ Stage-0 Pre-Check clean (0 CRITICAL/HIGH)."

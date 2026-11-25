@@ -89,7 +89,7 @@ export function readJsonNoSymlink(filePath) {
 
 export function defaultBotsConfig() {
   return {
-    schemaVersion: '2026.11.6',
+    schemaVersion: '2026.11.7',
     environment: 'STAGING',
     updatedAt: null,
     updatedBy: 'default',

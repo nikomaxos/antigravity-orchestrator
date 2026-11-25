@@ -140,7 +140,7 @@ auth_clis() {
   echo "   Command: claude login"
   echo "   (Opens browser to authenticate with Claude Pro/Max subscription)"
   echo ""
-  echo "3. Pool D — OpenCode + DeepSeek API Key:"
+  echo "3. Pool D (Optional Manual-Only — `/opencode`) — OpenCode + DeepSeek API Key:"
   mkdir -p "${HOME}/.config/llm-council"
   local secrets_env="${HOME}/.config/llm-council/secrets.env"
   if [ -f "$secrets_env" ] && grep -qE '^DEEPSEEK_API_KEY="?sk-[A-Za-z0-9_-]+' "$secrets_env" 2>/dev/null; then
@@ -203,7 +203,7 @@ test_clis() {
   echo "=========================================================="
   echo "  Pool B (OpenAI Codex CLI):       $b_status"
   echo "  Pool C (Anthropic Claude Code):  $c_status"
-  echo "  Pool D (OpenCode DeepSeek API):  $d_status"
+  echo "  Pool D (OpenCode DeepSeek — Manual-Only): $d_status"
   echo "=========================================================="
 }
 

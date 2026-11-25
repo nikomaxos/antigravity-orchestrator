@@ -2,15 +2,16 @@
 # =============================================================================
 # Cross-Model Council Review Gate (`run-codex-review-gate.sh`)
 # =============================================================================
-# Independent pre-commit code + OWASP review of the STAGED diff across 4 Pools:
+# Independent pre-commit code + OWASP review of the STAGED diff across Active Pools:
 #   Dynamic per-tier cascades from `model-routing.json` (`review_cascades.<tier>.cascade`):
-#   - R1 (`gpt-6.1-terra med` -> `claude-sonnet-5-5 med` -> `deepseek-v4-pro`)
-#   - R2 (`gpt-6.1-sol high` -> `claude-sonnet-5-5 high` -> `deepseek-v4-pro`)
-#   - R3 (**Pool C `claude-opus-5-5 high` primary** -> Pool B `gpt-6-astra high` -> Pool D `deepseek-v4-pro`)
+#   - R1 (`gpt-6.1-terra med` -> `claude-sonnet-5-5 med`)
+#   - R2 (`gpt-6.1-sol high` -> `claude-sonnet-5-5 high`)
+#   - R3 (**Pool C `claude-opus-5-5 high` primary** -> Pool B `gpt-6-astra high`)
+#   - Pool D (OpenCode / DeepSeek) is MANUAL-ONLY and excluded from automated review gates.
 #   - Stateful Round-2+ Delta Resume (`codex -s read-only -C ... exec resume`) when Round 1 ran on Pool B
 #   - Shared persistent pool cooldown cache (`~/.gemini/cache/pool-cooldowns.json`)
 #   - Pool A Last-Resort `--fallback`: Internal `Gemini 4 Carbon High` subagent
-#     (ONLY allowed if Pools B + C + D were all RATE_LIMITED or UNAVAILABLE!)
+#     (ONLY allowed if Pools B + C were both RATE_LIMITED or UNAVAILABLE!)
 #
 # Writes (HMAC-signed): .agent-state/codex-review.json
 # Reports:              .agent-reports/codex/review-latest.{json,md}
@@ -116,13 +117,13 @@ case "$TIER" in
 esac
 
 # -----------------------------------------------------------------------------
-# FALLBACK MODE — Pool A internal Antigravity subagent (ONLY if B+C+D all failed)
+# FALLBACK MODE — Pool A internal Antigravity subagent (ONLY if B+C both failed)
 # -----------------------------------------------------------------------------
 if [ "$MODE" = "fallback" ]; then
   PREV_STATUS=$(prev_field '.status'); PREV_FP=$(prev_field '.staged_fingerprint')
   if [ "$PREV_STATUS" != "SKIPPED_RATE_LIMIT" ] && [ "$PREV_STATUS" != "UNAVAILABLE" ]; then
     echo "❌ Fallback refused: last external CLI cascade status is '${PREV_STATUS:-none}'."
-    echo "   Internal fallback is ONLY allowed after Codex + Claude + DeepSeek CLIs were all RATE_LIMITED/UNAVAILABLE."
+    echo "   Internal fallback is ONLY allowed after Codex + Claude CLIs were both RATE_LIMITED/UNAVAILABLE."
     exit 3
   fi
   if [ "$PREV_FP" != "$FP" ]; then
@@ -144,7 +145,7 @@ if [ "$MODE" = "fallback" ]; then
   EFFORT_USED="high"; PASS_STATUS="PASS_FALLBACK"; THREAD_USED=""
 else
 # -----------------------------------------------------------------------------
-# REVIEW MODE — Multi-CLI Cascade (Pool B Codex -> Pool C Claude -> Pool D DeepSeek)
+# REVIEW MODE — Automated Multi-CLI Cascade (Pool B Codex <-> Pool C Claude; DeepSeek is manual-only)
 # -----------------------------------------------------------------------------
   STAMP_PROMPT=$(date -u +%Y%m%dT%H%M%SZ)
   PROMPT_FILE="${CODEX_REPORT_DIR}/review-${STAMP_PROMPT}.prompt.md"
@@ -385,35 +386,6 @@ DELTA_EOF
     fi
   }
 
-  _run_review_pool_d() {
-    local force_probe="${1:-0}" opencode_rev_model cd_info=""
-    opencode_rev_model="${OPENCODE_REVIEW_MODEL:-deepseek/deepseek-v4-pro}"
-    if [ "$force_probe" -eq 0 ]; then
-      cd_info=$(pool_cooldown_is_active "pool_d:${opencode_rev_model}" || true)
-      if [ -n "$cd_info" ]; then
-        echo "⏭️  [Pool D] Deferring OpenCode (${opencode_rev_model}) — in cooldown (${cd_info})."
-        SKIPPED_COOLDOWN_POOLS+=("pool_d")
-        return 0
-      fi
-    fi
-    echo "🤖 [Pool D] Failing over to OpenCode DeepSeek API [Tier=${TIER}]: model=${opencode_rev_model}..."
-    opencode_run "review" "$opencode_rev_model" "$CODEX_REVIEW_SCHEMA" "$RAW_OUT" "$PROMPT_FILE" 1
-    if [ "$CODEX_RUN_STATUS" = "OK" ] && ! validate_review_shape "$RAW_OUT"; then
-      CODEX_RUN_STATUS="SCHEMA_ERROR"
-      CODEX_RUN_ERROR="OpenCode output failed JSON schema validation"
-    fi
-    if [ "$CODEX_RUN_STATUS" = "OK" ]; then
-      REVIEW_SUCCEEDED=1; REVIEWER="opencode-deepseek"; MODEL_USED="$opencode_rev_model"; EFFORT_USED="high"; THREAD_USED=""
-    elif [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] || [ "$CODEX_RUN_STATUS" = "TIMEOUT" ] || [ "$CODEX_RUN_STATUS" = "SCHEMA_ERROR" ]; then
-      rm -f "$CUR_PATCH_TMP"
-      echo "❌ OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
-      exit 3
-    else
-      echo "⚠️  [Pool D] OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}"
-      CASCADE_ERRORS="${CASCADE_ERRORS}opencode:${CODEX_RUN_STATUS}(${CODEX_RUN_ERROR}); "
-    fi
-  }
-
   read -r -a REVIEW_POOLS <<< "$(routing_get_review_cascade "$TIER")"
   SKIPPED_COOLDOWN_POOLS=()
   for p in "${REVIEW_POOLS[@]}"; do
@@ -421,20 +393,18 @@ DELTA_EOF
     case "$p" in
       pool_b) _run_review_pool_b 0 ;;
       pool_c) _run_review_pool_c 0 ;;
-      pool_d) _run_review_pool_d 0 ;;
     esac
   done
 
-  # Security invariant: NEVER unlock Pool A self-review (--fallback) while ANY pool was only cache-skipped!
+  # Security invariant: NEVER unlock Pool A self-review (--fallback) while ANY automated pool was only cache-skipped!
   if [ "$REVIEW_SUCCEEDED" -eq 0 ] && [ "${#SKIPPED_COOLDOWN_POOLS[@]}" -gt 0 ] && \
-     ! echo "$CASCADE_ERRORS" | grep -qE '(codex|claude|opencode):(ERROR|TIMEOUT|SCHEMA_ERROR|INTEGRITY_VIOLATION)'; then
+     ! echo "$CASCADE_ERRORS" | grep -qE '(codex|claude):(ERROR|TIMEOUT|SCHEMA_ERROR|INTEGRITY_VIOLATION)'; then
     echo "⚠️  No uncached pool succeeded; performing live verification probe(s) on deferred pool(s): ${SKIPPED_COOLDOWN_POOLS[*]}..."
     for p in "${SKIPPED_COOLDOWN_POOLS[@]}"; do
       [ "$REVIEW_SUCCEEDED" -eq 1 ] && break
       case "$p" in
         pool_b) _run_review_pool_b 1 ;;
         pool_c) _run_review_pool_c 1 ;;
-        pool_d) _run_review_pool_d 1 ;;
       esac
     done
   fi
@@ -448,8 +418,8 @@ DELTA_EOF
 
   if [ "$REVIEW_SUCCEEDED" -eq 0 ]; then
     rm -f "$CUR_PATCH_TMP"
-    # Unlock Pool A fallback ONLY if every attempted external CLI was RATE_LIMITED or UNAVAILABLE
-    if echo "$CASCADE_ERRORS" | grep -qE '(codex|claude|opencode):(ERROR|TIMEOUT|SCHEMA_ERROR|INTEGRITY_VIOLATION|MAX_TURNS)'; then
+    # Unlock Pool A fallback ONLY if every attempted automated external CLI (Codex + Claude) was RATE_LIMITED or UNAVAILABLE
+    if echo "$CASCADE_ERRORS" | grep -qE '(codex|claude):(ERROR|TIMEOUT|SCHEMA_ERROR|INTEGRITY_VIOLATION|MAX_TURNS)'; then
       echo "❌ External CLI review failed with hard fault (${CASCADE_ERRORS}). Fix the error and re-run."
       exit 3
     fi
@@ -457,7 +427,7 @@ DELTA_EOF
     sign_state "$(jq -n -c --arg s "$NEW_STATUS" --arg tier "$TIER" --arg fp "$FP" --arg h "$HEAD_SHA" --arg t "$TS" \
       --arg e "$CASCADE_ERRORS" --argjson files "$STAGED_FILES_JSON" \
       '{status:$s, tier:$tier, reviewer:"external-cascade", staged_fingerprint:$fp, staged_files:$files, head:$h, blocking_count:null, error:$e, timestamp:$t}')"
-    echo "⚠️  All 3 External CLI Pools (Codex, Claude, DeepSeek) unavailable/rate-limited: ${CASCADE_ERRORS}"
+    echo "⚠️  All automated External CLI Pools (Codex, Claude) unavailable/rate-limited: ${CASCADE_ERRORS}"
     echo "➡️  LAST-RESORT FALLBACK (Pool A):"
     echo "   1. Spawn an internal subagent (Gemini 4 Carbon High) to review the staged diff using codex-review-schema.json"
     echo "      (including owasp_checklist >= 5 items + reviewer_agent_id + staged_fingerprint=\"${FP}\")."

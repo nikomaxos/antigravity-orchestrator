@@ -2,11 +2,12 @@
 # =============================================================================
 # Cross-Model Deep RCA (`codex-rca.sh`) — Read-Only Multi-CLI Cascade
 # =============================================================================
-# Cascade order:
+# Cascade order (auto mode):
 #   1. Pool B: OpenAI Codex CLI (`gpt-6-astra`, effort `xhigh`, skips if in cooldown)
 #   2. Pool C: Anthropic Claude Code CLI (`claude-sonnet-5-5` high bounded, `--opus` opt-in)
-#   3. Pool D: OpenCode CLI + DeepSeek API (`deepseek/deepseek-v4-pro`)
-#   4. Pool A: Exit 2 -> spawn internal `Gemini 4 Carbon High` subagent
+#   3. Pool A: Exit 2 -> spawn internal `Gemini 4 Carbon High` / `Neon XHigh` subagent
+# NOTE: Pool D (OpenCode / DeepSeek) is MANUAL-ONLY and NEVER invoked in `auto` mode.
+#       Use `--cli opencode` ONLY when explicitly requested by the user.
 # =============================================================================
 set -euo pipefail
 
@@ -94,14 +95,13 @@ CL_RCA="${CLAUDE_RCA_MODEL:-claude-sonnet-5-5}"
 [ "$RCA_USE_OPUS" -eq 1 ] && CL_RCA="${CLAUDE_RCA_OPUS_MODEL:-claude-opus-5-5}"
 CL_EFF="${CLAUDE_RCA_EFFORT:-high}"
 
-# Check all-cooldown edge case for auto mode
+# Check all-cooldown edge case for auto mode (automated pools: Pool B & Pool C only)
 ALL_RCA_COOLDOWN=0
 if [ "$PREFER_CLI" = "auto" ]; then
   if pool_cooldown_is_active "pool_b:${MODEL}" >/dev/null 2>&1 && \
-     pool_cooldown_is_active "pool_c:${CL_RCA}" >/dev/null 2>&1 && \
-     pool_cooldown_is_active "pool_d:${OPENCODE_PRO_MODEL}" >/dev/null 2>&1; then
+     pool_cooldown_is_active "pool_c:${CL_RCA}" >/dev/null 2>&1; then
     ALL_RCA_COOLDOWN=1
-    echo "⚠️  All RCA external pools appear in local cooldown cache — probing primary pool once before Pool A fallback."
+    echo "⚠️  All automated RCA external pools (B/C) appear in local cooldown cache — probing primary pool once before Pool A fallback."
   fi
 fi
 
@@ -142,17 +142,12 @@ if [ -z "$USED_LABEL" ] && { [ "$PREFER_CLI" = "auto" ] || [ "$PREFER_CLI" = "cl
   fi
 fi
 
-if [ -z "$USED_LABEL" ] && { [ "$PREFER_CLI" = "auto" ] || [ "$PREFER_CLI" = "opencode" ]; }; then
-  CD_D=$(pool_cooldown_is_active "pool_d:${OPENCODE_PRO_MODEL}" || true)
-  if [ -n "$CD_D" ] && [ "$PREFER_CLI" = "auto" ]; then
-    echo "⏭️  [Pool D] Skipping OpenCode RCA (${OPENCODE_PRO_MODEL}) — in cooldown (${CD_D})."
-    CODEX_RUN_STATUS="RATE_LIMITED"; CODEX_RUN_ERROR="cooldown: ${CD_D}"
-  else
-    echo "🤖 [Pool D] Failing over RCA to OpenCode DeepSeek (${OPENCODE_PRO_MODEL})..."
-    opencode_run "rca" "$OPENCODE_PRO_MODEL" "" "$OUT" "$PROMPT_FILE" 1
-    [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
-    [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="OpenCode (${OPENCODE_PRO_MODEL})"
-  fi
+# Pool D (OpenCode / DeepSeek) is strictly MANUAL-ONLY (`--cli opencode` explicit opt-in)
+if [ -z "$USED_LABEL" ] && [ "$PREFER_CLI" = "opencode" ]; then
+  echo "🤖 [Pool D — Manual Override] Running OpenCode DeepSeek RCA (${OPENCODE_PRO_MODEL})..."
+  opencode_run "rca" "$OPENCODE_PRO_MODEL" "" "$OUT" "$PROMPT_FILE" 1
+  [ "$CODEX_RUN_STATUS" = "INTEGRITY_VIOLATION" ] && { echo "❌ OpenCode ${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR}" >&2; exit 3; }
+  [ "$CODEX_RUN_STATUS" = "OK" ] && USED_LABEL="OpenCode (${OPENCODE_PRO_MODEL})"
 fi
 
 if [ -n "$USED_LABEL" ] && [ -s "$OUT" ]; then

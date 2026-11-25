@@ -3,22 +3,24 @@
 # External-First Frontier Orchestrator (`frontier-orchestrate.sh`)
 # =============================================================================
 # Unified CLI dispatcher that routes heavy reasoning, architecture, RCA, and
-# surgical read-only patch design to External Frontier Pools (B/C/D) FIRST,
-# preserving Pool A (`Gemini 4 Carbon`) quota for orchestration & final fallback.
+# surgical read-only patch design to Active External Frontier Pools (B/C) FIRST,
+# preserving Pool A (`Gemini 4`) quota for orchestration & final fallback.
+# NOTE: Pool D (OpenCode / DeepSeek) is STRICTLY MANUAL-ONLY (`/opencode`) and
+# is intentionally excluded from all automatic cascades here.
 #
 # Tier Cascades:
 #   --tier ui      (T2 React/TS/UI/Tests):
-#       Pool C (Claude Sonnet 5.5 med) -> Pool B (Codex gpt-6.1-terra med) -> Pool D (DeepSeek-V4-Pro)
+#       Pool C (Claude Sonnet 5.5 med) -> Pool B (Codex gpt-6.1-terra med / sol)
 #   --tier backend (T3 Multi-Service/CRUD/Flyway):
-#       Pool B (Codex gpt-6.1-sol high) -> Pool C (Claude Sonnet 5.5 high) -> Pool D (DeepSeek-V4-Pro)
+#       Pool B (Codex gpt-6.1-sol high / astra) -> Pool C (Claude Sonnet 5.5 high)
 #   --tier deep    (T4 Concurrency/SMPP/Hardware/Security/Architecture):
-#       Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in) -> Pool D (DeepSeek-V4-Pro)
-#   --tier flash   (T1 Log/Repo Scan):
-#       Pool D (DeepSeek-Flash -> DeepSeek-V4-Pro) -> Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna low)
+#       Pool B (Codex gpt-6-astra xhigh / sol) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in)
+#   --tier flash   (T1 Reserve Replacement / Fast Read-Only Triage):
+#       Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna / reserve low)
 #
 # Exit Codes:
 #   0 — External frontier pool succeeded (response printed to stdout & saved to .agent-reports/codex/frontier-latest.md)
-#   2 — All external frontier pools (B/C/D) are exhausted/unavailable; caller MUST fall back to Pool A (Gemini 4 Carbon Medium/High)
+#   2 — All automated external frontier pools (B/C) are exhausted/unavailable; caller MUST fall back to Pool A (Gemini 4 Hydrogen/Neon/Carbon)
 #   1 — Invalid arguments or usage error
 # =============================================================================
 set -euo pipefail
@@ -42,11 +44,11 @@ Usage:
   bash .agents/scripts/frontier-orchestrate.sh --tier <ui|backend|deep|flash> [--opus] [--prompt "<task>"] [--file <path>]...
 
 Options:
-  --tier <ui|backend|deep|flash>  Task tier routing cascade (default: backend):
-                                    - ui      (T2): Pool C (Claude Sonnet 5.5) -> Pool B (Codex gpt-6.1-terra medium) -> Pool D (DeepSeek-V4-Pro)
-                                    - backend (T3): Pool B (Codex gpt-6.1-sol high) -> Pool C (Claude Sonnet 5.5) -> Pool D (DeepSeek-V4-Pro)
-                                    - deep    (T4): Pool B (Codex gpt-6-astra xhigh) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in) -> Pool D (DeepSeek-V4-Pro)
-                                    - flash   (T1): Pool D (DeepSeek-Flash / DeepSeek-V4-Pro) -> Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna low)
+  --tier <ui|backend|deep|flash>  Task tier routing cascade (default: backend; DeepSeek/Pool D is manual-only via /opencode):
+                                    - ui      (T2): Pool C (Claude Sonnet 5.5) -> Pool B (Codex gpt-6.1-terra medium / sol)
+                                    - backend (T3): Pool B (Codex gpt-6.1-sol high / astra) -> Pool C (Claude Sonnet 5.5 high)
+                                    - deep    (T4): Pool B (Codex gpt-6-astra xhigh / sol) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in)
+                                    - flash   (T1): Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna / reserve low)
   --opus                          Opt into Claude Opus 5.5 on Pool C for bounded --tier deep tasks
   -p, --prompt "<text>"           Task prompt (can also be passed as positional args or via stdin)
   -f, -a, --file <path>           Attach repo-local file content into the prompt context (repeatable)
@@ -54,7 +56,7 @@ Options:
 
 Exit Codes:
   0  Success (frontier output written to stdout and .agent-reports/codex/frontier-latest.md)
-  2  All external pools (B/C/D) exhausted/rate-limited -> Fall back to Pool A (Gemini 4 Carbon Medium/High)
+  2  All automated external pools (B/C) exhausted/rate-limited -> Fall back to Pool A (Gemini 4 Hydrogen/Neon/Carbon)
   1  Usage / argument error
 EOF
 }
@@ -221,24 +223,6 @@ try_pool_c_claude() {
   return 1
 }
 
-try_pool_d_deepseek() {
-  local model="$1" req_paid="$2" label="$3" cd_info=""
-  cd_info=$(pool_in_cooldown "pool_d:${model}" || true)
-  if [ -n "$cd_info" ]; then
-    echo "⏭️  [Frontier Orchestrator] Skipping Pool D (${label}) — in cooldown (${cd_info})." >&2
-    CODEX_RUN_STATUS="COOLDOWN"
-    return 1
-  fi
-  echo ">>> [Frontier Orchestrator] Tier=${TIER} | Trying Pool D: OpenCode DeepSeek (${label}, model=${model}, agent=readonly-auditor)..." >&2
-  opencode_run "frontier-${TIER}" "$model" "" "$OUT_FILE" "$PROMPT_FILE" "$req_paid"
-  if [ "$CODEX_RUN_STATUS" = "OK" ] && [ -s "$OUT_FILE" ]; then
-    echo "✅ [Frontier Orchestrator] Pool D (${label}) succeeded." >&2
-    return 0
-  fi
-  echo "⚠️  [Frontier Orchestrator] Pool D (${label}) status=${CODEX_RUN_STATUS}: ${CODEX_RUN_ERROR:-none}" >&2
-  return 1
-}
-
 # Load dynamic tier settings from model-routing.json if available
 CFG_FILE="${MODEL_ROUTING_FILE:-${HOME}/.gemini/config/model-routing.json}"
 [ ! -f "$CFG_FILE" ] && [ -f "${CODEX_REPO_ROOT}/.agents/config/model-routing.json" ] && CFG_FILE="${CODEX_REPO_ROOT}/.agents/config/model-routing.json"
@@ -301,31 +285,27 @@ SUCCEEDED=0
 
 case "$TIER" in
   ui)
-    # Cascade: Pool C (Claude Sonnet 5.5) -> Pool B (Codex gpt-6.1-terra / sol) -> Pool D (DeepSeek-V4-Pro)
+    # Cascade: Pool C (Claude Sonnet 5.5) -> Pool B (Codex gpt-6.1-terra / sol)
     if try_pool_c_claude "$TIER_UI_C_MODEL" "$TIER_UI_C_EFFORT" "Claude ${TIER_UI_C_MODEL} (${TIER_UI_C_EFFORT})"; then
       SUCCEEDED=1
     elif try_pool_b_codex "$TIER_UI_B_MODEL" "$TIER_UI_B_EFFORT" "Codex ${TIER_UI_B_MODEL} (${TIER_UI_B_EFFORT})"; then
       SUCCEEDED=1
     elif [ -n "$TIER_UI_B_FALLBACK" ] && try_pool_b_codex "$TIER_UI_B_FALLBACK" "$TIER_UI_B_EFFORT" "Codex ${TIER_UI_B_FALLBACK} (${TIER_UI_B_EFFORT})"; then
       SUCCEEDED=1
-    elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
-      SUCCEEDED=1
     fi
     ;;
   backend)
-    # Cascade: Pool B (Codex gpt-6.1-sol / astra) -> Pool C (Claude Sonnet 5.5) -> Pool D (DeepSeek-V4-Pro)
+    # Cascade: Pool B (Codex gpt-6.1-sol / astra) -> Pool C (Claude Sonnet 5.5)
     if try_pool_b_codex "$TIER_BACKEND_B_MODEL" "$TIER_BACKEND_B_EFFORT" "Codex ${TIER_BACKEND_B_MODEL} (${TIER_BACKEND_B_EFFORT})"; then
       SUCCEEDED=1
     elif [ -n "$TIER_BACKEND_B_FALLBACK" ] && try_pool_b_codex "$TIER_BACKEND_B_FALLBACK" "$TIER_BACKEND_B_EFFORT" "Codex ${TIER_BACKEND_B_FALLBACK} (${TIER_BACKEND_B_EFFORT})"; then
       SUCCEEDED=1
     elif try_pool_c_claude "$TIER_BACKEND_C_MODEL" "$TIER_BACKEND_C_EFFORT" "Claude ${TIER_BACKEND_C_MODEL} (${TIER_BACKEND_C_EFFORT})"; then
       SUCCEEDED=1
-    elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
-      SUCCEEDED=1
     fi
     ;;
   deep)
-    # Cascade: Pool B (Codex gpt-6-astra / sol) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in) -> Pool D (DeepSeek-V4-Pro)
+    # Cascade: Pool B (Codex gpt-6-astra / sol) -> Pool C (Claude Sonnet 5.5 high; --opus opt-in)
     if try_pool_b_codex "$TIER_DEEP_B_MODEL" "$TIER_DEEP_B_EFFORT" "Codex ${TIER_DEEP_B_MODEL} (${TIER_DEEP_B_EFFORT})"; then
       SUCCEEDED=1
     elif [ -n "$TIER_DEEP_B_FALLBACK" ] && try_pool_b_codex "$TIER_DEEP_B_FALLBACK" "$TIER_DEEP_B_EFFORT" "Codex ${TIER_DEEP_B_FALLBACK} (${TIER_DEEP_B_EFFORT})"; then
@@ -334,17 +314,11 @@ case "$TIER" in
       SUCCEEDED=1
     elif try_pool_c_claude "$TIER_DEEP_C_MODEL" "$TIER_DEEP_C_EFFORT" "Claude ${TIER_DEEP_C_MODEL} (${TIER_DEEP_C_EFFORT})"; then
       SUCCEEDED=1
-    elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
-      SUCCEEDED=1
     fi
     ;;
   flash)
-    # Cascade (T1 / Zero-Gemini Flash Replacement): Pool D (DeepSeek-Flash -> DeepSeek-V4-Pro) -> Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna / reserve low)
-    if try_pool_d_deepseek "$OPENCODE_FLASH_MODEL" 0 "DeepSeek-Flash"; then
-      SUCCEEDED=1
-    elif try_pool_d_deepseek "$OPENCODE_PRO_MODEL" 0 "DeepSeek-V4-Pro"; then
-      SUCCEEDED=1
-    elif try_pool_c_claude "$TIER_FLASH_C_MODEL" "$TIER_FLASH_C_EFFORT" "Claude ${TIER_FLASH_C_MODEL} (${TIER_FLASH_C_EFFORT})"; then
+    # Cascade (T1 / Zero-Gemini Flash Replacement): Pool C (Claude Sonnet 5.5 low) -> Pool B (Codex gpt-6-luna / reserve low)
+    if try_pool_c_claude "$TIER_FLASH_C_MODEL" "$TIER_FLASH_C_EFFORT" "Claude ${TIER_FLASH_C_MODEL} (${TIER_FLASH_C_EFFORT})"; then
       SUCCEEDED=1
     elif try_pool_b_codex "$TIER_FLASH_B_MODEL" "$TIER_FLASH_B_EFFORT" "Codex ${TIER_FLASH_B_MODEL} (${TIER_FLASH_B_EFFORT})"; then
       SUCCEEDED=1
@@ -362,6 +336,6 @@ if [ "$SUCCEEDED" -eq 1 ] && [ -s "$OUT_FILE" ]; then
   exit 0
 fi
 
-echo "⛔ [Frontier Orchestrator] All external frontier pools (B/C/D) for --tier ${TIER} are exhausted or unavailable." >&2
-echo "➡️  Caller MUST fall back to Pool A (Antigravity Gemini 4 Carbon Medium/High)." >&2
+echo "⛔ [Frontier Orchestrator] All automated external frontier pools (B/C) for --tier ${TIER} are exhausted or unavailable (DeepSeek is manual-only via /opencode)." >&2
+echo "➡️  Caller MUST fall back to Pool A (Antigravity Gemini 4 Hydrogen/Neon/Carbon)." >&2
 exit 2

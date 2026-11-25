@@ -168,13 +168,17 @@ function loadGuardConfig(repoRoot) {
 // -----------------------------------------------------------------------------
 function listTranscripts(sinceMs) {
   const out = [];
-  let dirs = [];
+  let entries = [];
   try {
-    dirs = fs.readdirSync(BRAIN_DIR);
+    // Antigravity v2.35+ retains unlimited conversation history by default; skip non-directories
+    // and filter strictly by transcript mtimeMs >= sinceMs (8d window) to stay sub-50ms.
+    entries = fs.readdirSync(BRAIN_DIR, { withFileTypes: true });
   } catch {
     return out;
   }
-  for (const d of dirs) {
+  for (const dirent of entries) {
+    if (!dirent.isDirectory()) continue;
+    const d = dirent.name;
     const f = path.join(BRAIN_DIR, d, '.system_generated', 'logs', 'transcript.jsonl');
     let st;
     try {
@@ -505,10 +509,10 @@ function computeBudget(opts = {}) {
 // Automatic reserve / restore (never overrides a manual --set-reserve)
 // -----------------------------------------------------------------------------
 const REPLACEMENTS = {
-  t1_replacement: 'Pool D (deepseek/deepseek-flash | deepseek-v4-pro) -> Pool C (claude-sonnet-5-5 low) -> Pool B (codex gpt-6-luna low)',
-  t2_replacement: 'Pool C (claude-sonnet-5-5 med) -> Pool B (codex gpt-6.1-terra med) -> Pool D (deepseek-v4-pro)',
-  t3_replacement: 'Pool B (codex gpt-6.1-sol high) -> Pool C (claude-sonnet-5-5 high) -> Pool D (deepseek-v4-pro)',
-  t4_replacement: 'Pool B (codex gpt-6-astra xhigh) -> Pool C (claude-opus-5-5 high) -> Pool D (deepseek-v4-pro)',
+  t1_replacement: 'Pool C (claude-sonnet-5-5 low) -> Pool B (codex gpt-6-luna low)',
+  t2_replacement: 'Pool C (claude-sonnet-5-5 med) -> Pool B (codex gpt-6.1-terra med)',
+  t3_replacement: 'Pool B (codex gpt-6.1-sol high) -> Pool C (claude-sonnet-5-5 high)',
+  t4_replacement: 'Pool B (codex gpt-6-astra xhigh) -> Pool C (claude-opus-5-5 high | claude-sonnet-5-5 high)',
 };
 
 function buildQuotaState(reserve, pct, source, budget) {
@@ -634,7 +638,7 @@ function hookFragment(input = {}, repoRoot) {
     msgs.push(
       `🚨 ZERO-GEMINI RESERVE ACTIVE (source=${applied.source}, metered Gemini remaining=${rem}% | 5h used ${fmtK(w5.used_tokens)}/${fmtK(w5.budget_tokens || 0)}). ` +
         'MANDATORY: do NOT call invoke_subagent or swarm with ANY Gemini model (Carbon/Neon/Hydrogen/Argon/3.8 Flash, incl. Orchestrator & Model "inherit"/"flash"/"pro"). ' +
-        'Route ALL hands-on work via external pools: T1 `bash .agents/scripts/frontier-orchestrate.sh --tier flash`, T2 `--tier ui`, T3 `--tier backend`, T4 `--tier deep` (Pools B/C/D). ' +
+        'Route ALL hands-on work via external pools: T1 `bash .agents/scripts/frontier-orchestrate.sh --tier flash`, T2 `--tier ui`, T3 `--tier backend`, T4 `--tier deep` (Pools B/C; DeepSeek is manual-only). ' +
         'Keep parent turns minimal (1-step pass-through, no large reads/greps in parent context). ' +
         (onGemini
           ? 'Tell the user in Greek to switch Model Selection to Claude Opus 5.5 / Claude Sonnet 5.5 for orchestration until the Gemini window recovers.'
@@ -645,7 +649,7 @@ function hookFragment(input = {}, repoRoot) {
     msgs.push(
       `⚠️ GEMINI BUDGET LOW: metered remaining=${rem}% (5h window ${fmtK(w5.used_tokens)}/${fmtK(w5.budget_tokens || 0)}` +
         (wk.remaining_pct !== null ? `, weekly ${wk.remaining_pct}%` : '') +
-        `). Auto Zero-Gemini Reserve triggers below ${budget.thresholds.reserve}%. Prefer frontier-orchestrate.sh (Pools B/C/D) for T2-T4 now, avoid Gemini subagent fan-out, keep parent context small, and briefly inform the user (in Greek).`
+        `). Auto Zero-Gemini Reserve triggers below ${budget.thresholds.reserve}%. Prefer frontier-orchestrate.sh (Pools B/C) for T2-T4 now, avoid Gemini subagent fan-out, keep parent context small, and briefly inform the user (in Greek).`
     );
   }
   const hard = Number(cfg.ctx_hard_limit_tokens) || 200000;

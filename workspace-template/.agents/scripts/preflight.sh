@@ -82,7 +82,6 @@ if [ -f "$CODEX_LIB" ]; then
 
     B_OK="✗"; if codex_resolve_bin >/dev/null 2>&1; then B_OK="✓"; pool_cooldown_is_active "pool_b" >/dev/null 2>&1 && B_OK="⏳"; fi
     C_OK="✗"; if claude_resolve_bin >/dev/null 2>&1; then C_OK="✓"; pool_cooldown_is_active "pool_c" >/dev/null 2>&1 && C_OK="⏳"; fi
-    D_OK="free"; llm_has_deepseek_key && D_OK="✓"; if pool_cooldown_is_active "pool_d" >/dev/null 2>&1 || pool_cooldown_is_active "pool_d:${OPENCODE_PRO_MODEL}" >/dev/null 2>&1; then D_OK="⏳"; fi
 
     RCA=""
     if [ -L "${CODEX_REPORT_DIR}/rca-latest.md" ] || [ -f "${CODEX_REPORT_DIR}/rca-latest.md" ]; then
@@ -107,12 +106,12 @@ if [ -f "$CODEX_LIB" ]; then
       if [ -n "$LAST_IN" ] && [ "$LAST_IN" -gt 160000 ] 2>/dev/null; then
         CTX_WARN=" | 🛑 CTX=$((LAST_IN / 1000))K (>160K: suggest /compact or rotate chat!)"
       elif [ -n "$LAST_IN" ] && [ "$LAST_IN" -gt 120000 ] 2>/dev/null; then
-        CTX_WARN=" | ⚠️ CTX=$((LAST_IN / 1000))K (>120K: delegate heavy reads to Flash subagent; suggest /compact soon)"
+        CTX_WARN=" | ⚠️ CTX=$((LAST_IN / 1000))K (>120K: delegate heavy reads to Hydrogen / external pools; suggest /compact soon)"
       fi
     fi
     fi
 
-    echo " | 🤖 Review=${CR} Pools[B:${B_OK} C:${C_OK} D:${D_OK}]${RCA}${CTX_WARN}"
+    echo " | 🤖 Review=${CR} Pools[B:${B_OK} C:${C_OK}]${RCA}${CTX_WARN}"
   ) || CODEX_MSG=""
 fi
 
@@ -121,7 +120,7 @@ QUOTA_FILE="${AGY_GEMINI_QUOTA_FILE:-$HOME/.gemini/config/gemini-quota.json}"
 GEMINI_RESERVE_BANNER=""
 if [ -f "$QUOTA_FILE" ] && jq -e '.reserve_passthrough_mode == true' "$QUOTA_FILE" >/dev/null 2>&1; then
   REM_PCT=$(jq -r '.gemini_remaining_pct // "<10"' "$QUOTA_FILE" 2>/dev/null || echo "<10")
-  GEMINI_RESERVE_BANNER=" | 🚨 GEMINI_QUOTA=${REM_PCT}% (<10% PASS-THROUGH RESERVE: NO GEMINI/HYDROGEN/FLASH SUBAGENTS -> 100% POOLS B/C/D)"
+  GEMINI_RESERVE_BANNER=" | 🚨 GEMINI_QUOTA=${REM_PCT}% (<10% PASS-THROUGH RESERVE: NO GEMINI/HYDROGEN/FLASH SUBAGENTS -> 100% POOLS B/C)"
 fi
 
 MSG="🔒 Active Gates: QA=${QA_STATUS}, Regression=${REG_STATUS}, Vault=${VAULT_STATUS}, Docs=${DOCS_STATUS}, Skills=${SKILLS_STATUS}, Security=${SECURITY_STATUS}${CODEX_MSG}${GEMINI_RESERVE_BANNER}${GUARD_SUFFIX}"

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Manual-Only OpenCode + DeepSeek CLI Dispatcher (`/opencode` or explicit user trigger).
+# Pool D is excluded from all automatic cascades, review gates, RCA auto-mode, and reserve mode.
 set -euo pipefail
 
 export PATH="${HOME}/.opencode/bin:${HOME}/.local/bin:${PATH}"

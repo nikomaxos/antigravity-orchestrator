@@ -498,7 +498,7 @@ function writePrivateJsonSafe(filePath, data) {
 
 function defaultOffloadBotsConfig() {
   return {
-    schemaVersion: hubState.schemaVersion || '2026.11.6',
+    schemaVersion: hubState.schemaVersion || '2026.11.7',
     environment: 'STAGING',
     updatedAt: null,
     updatedBy: 'default',
@@ -871,7 +871,7 @@ function validateAndMergeBotsConfig(payload, actor) {
     }
   }
 
-  next.schemaVersion = hubState.schemaVersion || next.schemaVersion || '2026.11.6';
+  next.schemaVersion = hubState.schemaVersion || next.schemaVersion || '2026.11.7';
   next.environment = 'STAGING';
   next.updatedAt = new Date().toISOString();
   next.updatedBy = actor || 'admin';
@@ -1274,7 +1274,7 @@ WantedBy=timers.target
         bootstrapUrl: bootstrapUrlNickLaptop,
         bootstrapCommand: `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm "${bootstrapUrlNickLaptop}" | iex`,
         elevatedGatekeeperCommand,
-        cliAuthCommand: `codex login; claude login; opencode auth login`,
+        cliAuthCommand: `codex login; claude login`,
         smokeTestCommand: `agy-init-workspace.ps1 -WorkspacePath "C:\\Users\\parda\\OneDrive\\Dev\\ha"\nInvoke-RestMethod http://127.0.0.1:18099/api/gatekeeper/health`,
         fleetSyncJson: fleetSyncNickLaptop,
         mcpConfigJson: mcpConfigWin11,
@@ -1289,7 +1289,7 @@ WantedBy=timers.target
         bootstrapUrl: bootstrapUrlWin11,
         bootstrapCommand: `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm "${bootstrapUrlWin11}" | iex`,
         elevatedGatekeeperCommand,
-        cliAuthCommand: `codex login; claude login; opencode auth login`,
+        cliAuthCommand: `codex login; claude login`,
         smokeTestCommand: `agy-init-workspace.ps1 -WorkspacePath "C:\\Users\\soti\\Development\\my-project"\nInvoke-RestMethod http://127.0.0.1:18099/api/gatekeeper/health`,
         fleetSyncJson: fleetSyncWin11,
         mcpConfigJson: mcpConfigWin11,

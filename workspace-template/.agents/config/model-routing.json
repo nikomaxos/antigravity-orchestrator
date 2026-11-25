@@ -1,6 +1,24 @@
 {
-  "schema_version": "2026.11.6",
-  "updated_at": "2026-11-23T10:45:00Z",
+  "schema_version": "2026.11.7",
+  "updated_at": "2026-11-25T07:35:00Z",
+  "antigravity_desktop": {
+    "target_version": "2.35.1",
+    "released_at": "2026-11-24",
+    "default_orchestrator_effort": "high",
+    "unlimited_history": true,
+    "auto_resume_on_restart": true,
+    "conversation_api_skill": "conversations",
+    "ui_plugin_auto_open": true,
+    "rules_budget_bytes_per_file": 24000,
+    "rules_budget_total_tokens": 20000,
+    "swarm_features": [
+      "on_demand_paging",
+      "channels",
+      "fork",
+      "plan_json_overview",
+      "quota_aware_model_switch"
+    ]
+  },
   "fleet_sync": {
     "mode": "sse-push+daily-fallback",
     "daily_interval_seconds": 86400,
@@ -13,26 +31,26 @@
       "models": {
         "t0_orchestrator": {
           "id": "gemini-pro-orchestrator",
-          "fallback_id": "gemini-4-carbon-medium",
+          "fallback_id": "gemini-4-carbon-high",
           "display_name": "Orchestrator (Carbon -> Hydrogen)",
           "alias": "gemini-pro-orchestrator",
-          "default_effort": "medium",
-          "role": "Two-phase Flagship UI Orchestrator: Gemini 4 Carbon plans -> Gemini 4 Hydrogen executes via exit_plan_mode (19% faster, ~24% less quota)"
+          "default_effort": "high",
+          "role": "Two-phase Flagship UI Orchestrator: Gemini 4 Carbon plans (v2.35+ default High effort) -> Gemini 4 Hydrogen executes via exit_plan_mode (19% faster, ~24% less quota)"
         },
         "t0_orchestrator_neon": {
           "id": "gemini-pro-orchestrator-neon",
-          "fallback_id": "gemini-4-neon-medium",
+          "fallback_id": "gemini-4-neon-high",
           "display_name": "Orchestrator (Neon -> Hydrogen)",
           "alias": "gemini-pro-orchestrator-neon",
-          "default_effort": "medium",
-          "role": "Two-phase Balanced UI Orchestrator: Gemini 4 Neon plans (-25% planning burn vs Carbon, #2 Agent Arena & Steerability) -> Gemini 4 Hydrogen executes via exit_plan_mode"
+          "default_effort": "high",
+          "role": "Two-phase Balanced UI Orchestrator: Gemini 4 Neon plans (-25% planning burn vs Carbon, #2 Agent Arena & Steerability, v2.35+ default High effort) -> Gemini 4 Hydrogen executes via exit_plan_mode"
         },
         "t0_orchestrator_argon": {
           "id": "gemini-pro-orchestrator-argon",
-          "fallback_id": "gemini-4-argon-medium",
+          "fallback_id": "gemini-4-argon-high",
           "display_name": "Orchestrator (Argon -> Hydrogen)",
           "alias": "gemini-pro-orchestrator-argon",
-          "default_effort": "medium",
+          "default_effort": "high",
           "role": "Two-phase Compliance UI Orchestrator: Gemini 4 Argon plans -> Gemini 4 Hydrogen executes via exit_plan_mode"
         },
         "t1_explorer": {
@@ -41,7 +59,7 @@
           "display_name": "Gemini 4 Hydrogen (Low/Medium)",
           "subagent_model": "inherit_on_hydrogen_or_swarm_hydrogen_low",
           "default_effort": "low",
-          "role": "Primary T1 Fast Explorer / Live-Ops Pre-Flight / Triage / Docs (2.5x faster, 57% vs 18.2% Terminal-Bench 4.1, >5x fewer hallucinations). Orchestrator turns: exit_plan_mode -> Step 0 Read-Only Pre-Flight in Hydrogen (with Re-plan if: guard). Non-Orchestrator turns: swarm gemini-4-hydrogen-low (or medium for critical live production API/GSM/SMPP/bitmask checks). Massive 100K+ non-critical log dumps: Pool D DeepSeek-Flash (frontier-orchestrate.sh --tier flash). Gemini 3.8 Flash (Model='flash') is STRICTLY FORBIDDEN for all non-browser tasks."
+          "role": "Primary T1 Fast Explorer / Live-Ops Pre-Flight / Triage / Docs (2.5x faster, 57% vs 18.2% Terminal-Bench 4.1, >5x fewer hallucinations). Always invoke Pool 0 Linux offload bots first for deterministic telemetry. Orchestrator turns: exit_plan_mode -> Step 0 Read-Only Pre-Flight in Hydrogen (with Re-plan if: guard). Non-Orchestrator turns: swarm gemini-4-hydrogen-low (or medium for critical live production API/GSM/SMPP/bitmask checks). In <10% Reserve Mode, route T1 to frontier-orchestrate.sh --tier flash (Pool C Claude Sonnet 5.5 low -> Pool B Codex gpt-6-luna low). Gemini 3.8 Flash (Model='flash') is STRICTLY FORBIDDEN for all non-browser tasks."
         },
         "t2_coding": {
           "id": "gemini-4-hydrogen-medium",
@@ -141,6 +159,7 @@
       "name": "OpenAI Codex CLI Subscription",
       "provider": "openai-codex",
       "cli": "codex",
+      "auto_enabled": true,
       "models": {
         "t1_reserve": {
           "primary": "gpt-6-luna",
@@ -192,6 +211,7 @@
       "name": "Anthropic Claude Code CLI Subscription",
       "provider": "anthropic-claude",
       "cli": "claude",
+      "auto_enabled": true,
       "models": {
         "t1_reserve": {
           "primary": "claude-sonnet-5-5",
@@ -263,9 +283,12 @@
       }
     },
     "pool_d": {
-      "name": "OpenCode DeepSeek Official API",
+      "name": "OpenCode DeepSeek Official API (Manual-Only)",
       "provider": "opencode-deepseek",
       "cli": "opencode",
+      "auto_enabled": false,
+      "invocation_mode": "manual_only",
+      "trigger": "Manual-only via /opencode or explicit user request (excluded from all automated cascades, review gates, RCA auto-mode, and <10% reserve pass-through)",
       "models": {
         "t1_flash": {
           "primary": "deepseek/deepseek-flash",
@@ -286,21 +309,17 @@
   "tier_cascades": {
     "ui": [
       {"pool": "pool_c", "tier_key": "t2_ui"},
-      {"pool": "pool_b", "tier_key": "t2_ui"},
-      {"pool": "pool_d", "tier_key": "pro_fallback"}
+      {"pool": "pool_b", "tier_key": "t2_ui"}
     ],
     "backend": [
       {"pool": "pool_b", "tier_key": "t3_backend"},
-      {"pool": "pool_c", "tier_key": "t3_backend"},
-      {"pool": "pool_d", "tier_key": "pro_fallback"}
+      {"pool": "pool_c", "tier_key": "t3_backend"}
     ],
     "deep": [
       {"pool": "pool_b", "tier_key": "t4_deep"},
-      {"pool": "pool_c", "tier_key": "t4_deep"},
-      {"pool": "pool_d", "tier_key": "pro_fallback"}
+      {"pool": "pool_c", "tier_key": "t4_deep"}
     ],
     "flash": [
-      {"pool": "pool_d", "tier_key": "t1_flash"},
       {"pool": "pool_c", "tier_key": "t1_reserve"},
       {"pool": "pool_b", "tier_key": "t1_reserve"}
     ]
@@ -308,29 +327,26 @@
   "review_cascades": {
     "r1": {
       "primary_pool": "pool_b",
-      "cascade": ["pool_b", "pool_c", "pool_d"],
+      "cascade": ["pool_b", "pool_c"],
       "claude_max_turns": 10,
       "pool_b": {"model": "gpt-6.1-terra", "effort": "medium"},
       "pool_c": {"model": "claude-sonnet-5-5", "fallback": "sonnet", "effort": "medium"},
-      "pool_d": {"model": "deepseek/deepseek-v4-pro"},
       "pool_a_fallback": {"model": "gemini-4-hydrogen-medium", "effort": "medium"}
     },
     "r2": {
       "primary_pool": "pool_b",
-      "cascade": ["pool_b", "pool_c", "pool_d"],
+      "cascade": ["pool_b", "pool_c"],
       "claude_max_turns": 12,
       "pool_b": {"model": "gpt-6.1-sol", "effort": "high"},
       "pool_c": {"model": "claude-sonnet-5-5", "fallback": "sonnet", "effort": "high"},
-      "pool_d": {"model": "deepseek/deepseek-v4-pro"},
       "pool_a_fallback": {"model": "gemini-4-neon-high", "effort": "high"}
     },
     "r3": {
       "primary_pool": "pool_c",
-      "cascade": ["pool_c", "pool_b", "pool_d"],
+      "cascade": ["pool_c", "pool_b"],
       "claude_max_turns": 16,
       "pool_c": {"model": "claude-opus-5-5", "fallback": "opus", "effort": "high"},
       "pool_b": {"model": "gpt-6-astra", "effort": "high"},
-      "pool_d": {"model": "deepseek/deepseek-v4-pro"},
       "pool_a_fallback": {"model": "gemini-4-carbon-high", "effort": "high"}
     }
   },
@@ -340,15 +356,14 @@
     "min_ttl_secs": 60,
     "max_ttl_secs": 21600,
     "state_file": "~/.gemini/cache/pool-cooldowns.json",
-    "_comment": "Shared persistent per-pool cooldown cache parsed from provider reset timestamps (try again at HH:MM AM/PM, retry after Ns, etc.). Respects AGY_POOL_COOLDOWN_FILE and AGY_IGNORE_COOLDOWN=1."
+    "_comment": "Shared persistent per-pool cooldown cache parsed from provider reset timestamps (try again at HH:MM AM/PM, retry after Ns, etc.) across active automated external pools (Pool B Codex, Pool C Claude). Respects AGY_POOL_COOLDOWN_FILE and AGY_IGNORE_COOLDOWN=1."
   },
   "rca_cascade": [
     {"pool": "pool_b", "tier_key": "rca"},
-    {"pool": "pool_c", "tier_key": "rca"},
-    {"pool": "pool_d", "tier_key": "pro_fallback"}
+    {"pool": "pool_c", "tier_key": "rca"}
   ],
   "gemini_quota_guard": {
-    "_comment": "AUTOMATIC Gemini reserve trigger (workspace .agents/scripts/gemini-budget.js, run by preflight on every PreInvocation). Self-meters PLANNER_RESPONSE tokens (input + output + cache_read*cache_read_weight) from ~/.gemini/antigravity/brain/*/transcript.jsonl over a rolling 5h window and a rolling 7d window. five_hour_token_budget calibrated 2026-11-18 from the real 5h-limit exhaustion: 238.8M observed in 05:29:30Z-10:29:30Z (1002 steps) x 0.95 safety. Optional machine-local threshold overrides (strictly allowlisted: ctx_hard_limit_tokens, ctx_warn_tokens, reinject_minutes, warn_threshold_pct) live in ~/.gemini/config/model-routing.local.json (never touched by agy-arch-sync). Manual gemini-quota-mode.sh --set-reserve (source=manual) is never overridden.",
+    "_comment": "AUTOMATIC Gemini reserve trigger (workspace .agents/scripts/gemini-budget.js, run by preflight on every PreInvocation). Self-meters PLANNER_RESPONSE tokens (input + output + cache_read*cache_read_weight) from ~/.gemini/antigravity/brain/*/transcript.jsonl over discrete 5h epochs and a rolling 7d window (optimized for Antigravity v2.35+ unlimited history). five_hour_token_budget calibrated 2026-11-18 from the real 5h-limit exhaustion: 238.8M observed in 05:29:30Z-10:29:30Z (1002 steps) x 0.95 safety. Optional machine-local threshold overrides (strictly allowlisted: ctx_hard_limit_tokens, ctx_warn_tokens, reinject_minutes, warn_threshold_pct) live in ~/.gemini/config/model-routing.local.json (never touched by agy-arch-sync). Manual gemini-quota-mode.sh --set-reserve (source=manual) is never overridden.",
     "enabled": true,
     "auto": true,
     "window_hours": 5,
